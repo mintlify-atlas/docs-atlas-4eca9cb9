@@ -11,7 +11,7 @@ Builtins are referenced in `AllowedCommands` using the `rshell:` namespace prefi
   Run `help` inside a script to print a list of all registered builtins at runtime. For detailed flag information, run `<command> --help`.
 </Note>
 
-Any command not in the list below returns exit code 127 with `<cmd>: not found` unless an `ExecHandler` is configured for external commands.
+Any command not in the allowlist returns exit code 127 with `<cmd>: command not allowed`. External commands not implemented as builtins additionally require an `ExecHandler`; without one, they return `<cmd>: command not found`.
 
 ## Quick reference
 
@@ -296,6 +296,10 @@ Any command not in the list below returns exit code 127 with `<cmd>: not found` 
 
     Displays all registered builtin commands with brief descriptions. The list is filtered to only show commands that are permitted under the current `AllowedCommands` policy.
 
+    <Note>
+      `help` is always executable regardless of the `AllowedCommands` policy — it does not need to be listed in `AllowedCommands` to work.
+    </Note>
+
     For detailed flag information on any specific command, run:
 
     ```bash
@@ -416,7 +420,7 @@ Any command not in the list below returns exit code 127 with `<cmd>: not found` 
     | `-f` | Full-format listing with UID, PPID, STIME columns |
     | `-p PIDLIST` | Show only processes with the given PIDs |
 
-    Default output shows current-session processes. On Linux, reads from `/proc` (the path can be overridden with the `ProcPath` runner option). Not available on macOS.
+    Default output shows current-session processes. On Linux, reads from `/proc` (the path can be overridden with the `ProcPath` runner option). On macOS, reads process info via `kern.proc` sysctl. On Windows, reads from the Windows process list.
 
     ```bash
     ps -ef
@@ -680,7 +684,7 @@ Any command not in the list below returns exit code 127 with `<cmd>: not found` 
 
     ```bash
     wc -l /var/log/app.log
-    find /data -name "*.go" | xargs wc -l
+    grep -r "" /data --include="*.go" | wc -l
     cat /data/file.txt | wc -w
     ```
   </Accordion>

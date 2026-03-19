@@ -27,7 +27,7 @@ Interprets a shell node. The node must be one of:
 
 - On the first call, `Reset` is invoked automatically to initialize runner state.
 - If `MaxExecutionTime` is set, a child context with that deadline is derived for each `Run` call. Each `Run` gets a fresh deadline.
-- AST validation runs before execution. Blocked shell features (e.g., process substitution, subshells) return `ExitStatus(2)` and print an error to stderr.
+- AST validation runs before execution. Blocked shell features (e.g., process substitution, arithmetic expansion, `while`/`until` loops) return `ExitStatus(2)` and print an error to stderr.
 - `Run` can be called multiple times on the same Runner to interpret scripts incrementally. Shell state (variables, working directory) is preserved between calls unless `Reset` is called.
 
 **Return value:**

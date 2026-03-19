@@ -111,7 +111,7 @@ The environment starts completely empty. No host environment variables are inher
 rshell runs on Linux, macOS, and Windows. Platform-specific behavior:
 
 - **Linux**: Full feature set including the `ps` builtin (reads `/proc`) and the `ss` builtin (reads `/proc/net/`). The `ProcPath` option overrides the proc root for container environments.
-- **macOS**: Full feature set. `ss` reads socket state via sysctl. `ps` is not available.
+- **macOS**: Full feature set. `ss` reads socket state via sysctl. `ps` reads process info via `kern.proc` sysctl.
 - **Windows**: Full feature set. `ss` reads socket state via `iphlpapi.dll`. Path handling uses Windows conventions.
 
 ## Next steps

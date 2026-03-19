@@ -132,7 +132,7 @@ interp.New(
 func AllowedPaths(paths []string) RunnerOption
 ```
 
-Restricts filesystem access to the specified directories. Access is enforced using `os.Root` (Go 1.24+), which uses `openat` syscalls for atomic path validation — immune to symlink and `..` traversal attacks. `os.Root` handles are opened eagerly at construction time.
+Restricts filesystem access to the specified directories. Access is enforced using `os.Root` (Go 1.24+, required 1.25+), which uses `openat` syscalls for atomic path validation — immune to symlink and `..` traversal attacks. `os.Root` handles are opened eagerly at construction time.
 
 <ParamField path="paths" type="[]string">
   Absolute directory paths to allow. Only files within these directories can be opened, read, listed, or stat'd. An empty slice blocks all file access.

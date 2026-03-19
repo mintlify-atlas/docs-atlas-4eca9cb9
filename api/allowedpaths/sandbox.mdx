@@ -7,7 +7,7 @@ description: "Filesystem sandbox using os.Root for safe directory-scoped file ac
 type Sandbox struct { ... }
 ```
 
-`Sandbox` restricts filesystem access to a set of allowed directories. Enforcement is backed by `os.Root` (Go 1.24+), which uses `openat` syscalls for atomic path validation — immune to symlink races and `..` traversal attacks. `os.Root` handles are opened eagerly at construction time, pinning the allowed directories before any script runs.
+`Sandbox` restricts filesystem access to a set of allowed directories. Enforcement is backed by `os.Root` (requires Go 1.25+), which uses `openat` syscalls for atomic path validation — immune to symlink races and `..` traversal attacks. `os.Root` handles are opened eagerly at construction time, pinning the allowed directories before any script runs.
 
 <Note>
   In normal usage, you configure the sandbox via [`interp.AllowedPaths`](/api/interp/runner-options#allowedpaths) rather than constructing a `Sandbox` directly. Use this package directly only when you need lower-level sandbox access outside of a Runner.
@@ -200,7 +200,7 @@ func (s *Sandbox) Close() error
 
 Releases all `os.Root` file descriptors. Safe to call multiple times; subsequent calls are no-ops. Always defer `Close` after `New`.
 
-## Utility function
+## Utility functions
 
 ### IsDevNull
 
@@ -213,5 +213,48 @@ Reports whether `path` refers to the platform's null device (`/dev/null` on Unix
 ```go
 if allowedpaths.IsDevNull(path) {
     // path is the null device — always safe to open
+}
+```
+
+---
+
+### PortableErrMsg
+
+```go
+func PortableErrMsg(err error) string
+```
+
+Returns a POSIX-style error message string for the given error, normalizing platform-specific syscall messages to consistent cross-platform strings. Returns an empty string for `nil`.
+
+Normalized messages:
+
+| Condition | Returns |
+|---|---|
+| `fs.ErrNotExist` | `"no such file or directory"` |
+| `fs.ErrPermission` | `"permission denied"` |
+| `fs.ErrExist` | `"file exists"` |
+| Is-a-directory error | `"is a directory"` |
+| Other | `err.Error()` |
+
+This ensures shell error output is identical across Linux, macOS, and Windows.
+
+```go
+msg := allowedpaths.PortableErrMsg(err)
+fmt.Fprintf(stderr, "cat: %s: %s\n", path, msg)
+```
+
+---
+
+### PortablePathError
+
+```go
+func PortablePathError(err error) error
+```
+
+Returns a `*os.PathError` with its `Err` field normalized using `PortableErrMsg`. The `Op` and `Path` fields are preserved. If `err` is not a `*os.PathError`, it is returned as-is. Returns `nil` for `nil` input.
+
+```go
+if err != nil {
+    return allowedpaths.PortablePathError(err)
 }
 ```

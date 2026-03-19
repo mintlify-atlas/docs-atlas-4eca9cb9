@@ -179,7 +179,7 @@ Restricts all file operations performed by the interpreter to the specified dire
   Absolute paths to directories the shell is allowed to access. Each path must exist at construction time.
 </ParamField>
 
-rshell uses `os.Root` (Go 1.24+) to open a directory handle per allowed path at construction time. All subsequent file operations are resolved relative to these handles using `openat`-family syscalls. This makes symlink traversal, `..` sequences, and TOCTOU races impossible at the kernel level.
+rshell uses `os.Root` (Go 1.25+) to open a directory handle per allowed path at construction time. All subsequent file operations are resolved relative to these handles using `openat`-family syscalls. This makes symlink traversal, `..` sequences, and TOCTOU races impossible at the kernel level.
 
 ```go
 runner, err := interp.New(
