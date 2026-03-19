@@ -1,0 +1,63 @@
+---
+title: "Publishing a Release"
+description: "How to publish a new rshell release on GitHub"
+---
+
+Releases are published from the GitHub UI. Once a release is published,
+go-releaser automatically builds and attaches installable artifacts to the
+release.
+
+## Steps
+
+<Steps>
+  <Step title="Merge changes to main">
+    Ensure all changes intended for the release are merged into the `main`
+    branch and all CI checks pass.
+  </Step>
+  <Step title="Navigate to the Releases page">
+    Open the repository on GitHub and go to the
+    [Releases](https://github.com/DataDog/rshell/releases) page.
+  </Step>
+  <Step title="Draft a new release">
+    Click **Draft a new release**.
+  </Step>
+  <Step title="Select or create a tag">
+    Use the **Select a tag** dropdown to choose an existing tag, or type a new
+    tag name to create one.
+
+    <Note>
+      Tag names must include the `v` prefix. For example, if the last release
+      was `v0.1.29`, the next release should be `v0.1.30`.
+    </Note>
+  </Step>
+  <Step title="Set the release title">
+    Set the release title to the same value as the version tag (e.g.
+    `v0.1.30`).
+  </Step>
+  <Step title="Generate release notes">
+    Click **Generate release notes** to automatically populate the release
+    description from merged pull requests since the last release.
+  </Step>
+  <Step title="Publish the release">
+    Click **Publish release**.
+
+    This creates the git tag and triggers go-releaser, which builds and attaches
+    installable artifacts to the release.
+  </Step>
+</Steps>
+
+## Versioning Convention
+
+rshell uses [semantic versioning](https://semver.org) with a `v` prefix:
+
+```
+v<major>.<minor>.<patch>
+```
+
+Examples: `v0.1.30`, `v1.0.0`.
+
+## go-releaser
+
+Publishing a GitHub release triggers go-releaser automatically. It builds
+binaries for all supported platforms and attaches them as downloadable artifacts
+to the release — no manual build or upload steps are required.

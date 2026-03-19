@@ -1,0 +1,165 @@
+---
+title: "interp.Runner"
+description: "The rshell interpreter — parse, configure, and run shell scripts"
+---
+
+```go
+type Runner struct { ... }
+```
+
+`Runner` interprets restricted shell programs. It can be reused across multiple `Run` calls but is **not safe for concurrent use**. Always construct a Runner with [`New`](/api/interp/new) — zero-initializing the struct directly will cause a fatal error on first `Run`.
+
+## Methods
+
+### Run
+
+```go
+func (r *Runner) Run(ctx context.Context, node syntax.Node) error
+```
+
+Interprets a shell node. The node must be one of:
+
+- `*syntax.File` — a complete parsed shell script
+- `*syntax.Stmt` — a single statement
+- `syntax.Command` — a command expression
+
+**Behavior:**
+
+- On the first call, `Reset` is invoked automatically to initialize runner state.
+- If `MaxExecutionTime` is set, a child context with that deadline is derived for each `Run` call. Each `Run` gets a fresh deadline.
+- AST validation runs before execution. Blocked shell features (e.g., process substitution, subshells) return `ExitStatus(2)` and print an error to stderr.
+- `Run` can be called multiple times on the same Runner to interpret scripts incrementally. Shell state (variables, working directory) is preserved between calls unless `Reset` is called.
+
+**Return value:**
+
+| Condition | Return value |
+|---|---|
+| Success | `nil` |
+| Non-zero exit | [`ExitStatus`](/api/interp/exit-status) error |
+| Fatal interpreter error | Opaque `error` (not `ExitStatus`) |
+| Internal panic (recovered) | `fmt.Errorf("internal error")` |
+
+```go
+err := r.Run(ctx, file)
+if err != nil {
+    var status interp.ExitStatus
+    if errors.As(err, &status) {
+        fmt.Printf("script exited with code %d\n", int(status))
+    } else {
+        fmt.Printf("fatal error: %v\n", err)
+    }
+}
+```
+
+---
+
+### Reset
+
+```go
+func (r *Runner) Reset()
+```
+
+Returns the Runner to its initial state, as if it had just been created by `New`. Specifically:
+
+- Restores `Dir`, `Params`, stdin, stdout, and stderr to the values set at construction time.
+- Clears all shell variables and re-initializes built-in variables (`PWD`, `IFS`, `OPTIND`).
+- Installs the default open and exec handlers (if not overridden by options).
+
+`Reset` is called **automatically** on the first `Run` call. You only need to call it explicitly when reusing a Runner across multiple unrelated scripts and you want to clear accumulated shell state.
+
+<Note>
+  If you want to run multiple scripts while preserving environment variables or the working directory between them, do **not** call `Reset` between runs.
+</Note>
+
+---
+
+### Close
+
+```go
+func (r *Runner) Close() error
+```
+
+Releases resources held by the Runner — specifically the `os.Root` file descriptors opened by `AllowedPaths`. It is safe to call `Close` multiple times; subsequent calls are no-ops.
+
+Always defer `Close` immediately after a successful `New`:
+
+```go
+r, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedPaths([]string{"/data"}),
+)
+if err != nil {
+    return err
+}
+defer r.Close()
+```
+
+## ExitStatus type
+
+```go
+type ExitStatus uint8
+
+func (s ExitStatus) Error() string
+```
+
+`ExitStatus` is the error type returned by `Run` when the script exits with a non-zero code. It implements the `error` interface; `Error()` returns `"exit status N"`. Use `errors.As` to distinguish it from fatal errors. See [ExitStatus](/api/interp/exit-status) for full details.
+
+## Full usage pattern
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "os"
+    "strings"
+
+    "github.com/DataDog/rshell/interp"
+    "mvdan.cc/sh/v3/syntax"
+)
+
+func main() {
+    r, err := interp.New(
+        interp.StdIO(nil, os.Stdout, os.Stderr),
+        interp.AllowedCommands([]string{"rshell:echo", "rshell:cat"}),
+        interp.AllowedPaths([]string{"/tmp"}),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer r.Close()
+
+    scripts := []string{
+        `echo "first script"`,
+        `echo "second script"`,
+    }
+
+    parser := syntax.NewParser()
+    for _, src := range scripts {
+        // Reset between unrelated scripts to clear shell state.
+        r.Reset()
+
+        f, err := parser.Parse(strings.NewReader(src), "")
+        if err != nil {
+            panic(err)
+        }
+
+        if err := r.Run(context.Background(), f); err != nil {
+            var status interp.ExitStatus
+            if errors.As(err, &status) {
+                fmt.Fprintf(os.Stderr, "exit %d\n", int(status))
+            } else {
+                fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+            }
+        }
+    }
+}
+```
+
+## See also
+
+- [`interp.New`](/api/interp/new) — construct a Runner
+- [RunnerOption functions](/api/interp/runner-options) — all configuration options
+- [`ExitStatus`](/api/interp/exit-status) — interpreting exit codes

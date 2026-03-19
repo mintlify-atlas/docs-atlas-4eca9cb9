@@ -1,0 +1,127 @@
+---
+title: "Allowed commands"
+description: "How AllowedCommands restricts command execution to an explicit allowlist using the rshell: namespace prefix."
+---
+
+By default, rshell blocks all command execution. Any attempt to run a command — builtin or external — returns exit code 127 with the message `<cmd>: command not allowed`. You must explicitly opt in to each command you want the interpreter to execute.
+
+## The `rshell:` namespace prefix
+
+`AllowedCommands` requires every command name to carry the `rshell:` namespace prefix:
+
+```go
+interp.AllowedCommands([]string{
+    "rshell:echo",
+    "rshell:cat",
+    "rshell:grep",
+    "rshell:find",
+})
+```
+
+The prefix is stripped internally and the bare name (e.g. `echo`, `cat`) is stored in the allowlist. At execution time, the command name from the shell script is matched against that bare list. The prefix never appears in shell scripts — an agent writes `echo hello`, not `rshell:echo hello`.
+
+### Why the prefix is required
+
+The namespace prefix is a deliberate friction point that prevents confusion between builtin commands and external commands, and between intentional allowlisting and prompt-injection attacks.
+
+Without a prefix, an attacker could craft input like `find / -exec rm {} \;` and a careless allowlist entry of `"find"` would silently authorize it. With the `rshell:` prefix, allowlisting is always an explicit act by the Go caller — the prefix cannot appear in agent-generated shell input.
+
+The prefix also makes allowlists grep-able and auditable in code review: every `rshell:` occurrence is a security decision.
+
+## Signature
+
+```go
+func AllowedCommands(names []string) RunnerOption
+```
+
+Pass `AllowedCommands` as an option to `interp.New`:
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{"rshell:echo", "rshell:wc"}),
+)
+```
+
+## Error cases
+
+`AllowedCommands` validates every entry at construction time and returns an error immediately from `interp.New` if any entry is malformed. No runner is created.
+
+| Input | Error |
+|---|---|
+| `""` | `AllowedCommands: empty command name` |
+| `"cat"` | `AllowedCommands: "cat" missing namespace prefix (expected "rshell:<command>")` |
+| `"other:cat"` | `AllowedCommands: "other:cat" has unknown namespace "other" (only "rshell" is supported)` |
+| `"rshell:"` | `AllowedCommands: "rshell:" has empty command name` |
+| `"rshell:bin:cat"` | `AllowedCommands: "rshell:bin:cat" contains multiple colons; expected format "rshell:<command>"` |
+
+Path-containing names after prefix stripping (e.g. `rshell:/bin/bash`) will not match bare command names in shell scripts. The bare name `bash` and the path `/bin/bash` are treated as distinct entries.
+
+## Execution-time check
+
+When a command is executed, its name (`args[0]`) is looked up in the allowlist map. If the name is not present, the interpreter prints `<cmd>: command not allowed` to stderr and returns exit code 127.
+
+This check applies to both builtins and external commands. An external command also requires an `ExecHandler` to be provided — even if a command is in the allowlist, it cannot run as an external binary without an exec handler.
+
+## Checking which commands are allowed
+
+```go
+runner, err := interp.New(
+    interp.AllowedCommands([]string{"rshell:echo", "rshell:cat", "rshell:grep"}),
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer runner.Close()
+```
+
+If `AllowedCommands` returns a non-nil error, the runner is not created and `interp.New` returns the validation error directly.
+
+## AllowAllCommands
+
+`AllowAllCommands` bypasses the allowlist and permits any command:
+
+```go
+func AllowAllCommands() RunnerOption
+```
+
+<Warning>
+  `AllowAllCommands()` is intended for testing convenience only. It completely bypasses the command allowlist. Never use it in production code that runs agent-generated or user-influenced scripts.
+</Warning>
+
+```go
+// Only for tests
+runner, _ := interp.New(
+    interp.AllowAllCommands(),
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+)
+```
+
+When `AllowAllCommands` is active, any command name passes the check — including external commands that would normally require both an allowlist entry and an `ExecHandler`.
+
+## Example: enabling a specific set of builtins
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{
+        "rshell:echo",
+        "rshell:printf",
+        "rshell:cat",
+        "rshell:grep",
+        "rshell:find",
+        "rshell:wc",
+        "rshell:head",
+        "rshell:tail",
+    }),
+    interp.AllowedPaths([]string{"/data/logs"}),
+    interp.MaxExecutionTime(10*time.Second),
+)
+if err != nil {
+    return err
+}
+defer runner.Close()
+```
+
+This allows an agent to read and search log files without being able to execute any other commands or access any other paths.

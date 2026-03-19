@@ -1,0 +1,687 @@
+---
+title: "Built-in commands"
+description: "All built-in commands available in rshell — security-reviewed POSIX implementations that resist GTFOBins-style abuse."
+---
+
+rshell ships a set of built-in commands that are implemented directly in Go. Every builtin is a security-reviewed POSIX-compatible implementation designed for AI agent use. Dangerous flag combinations known to enable [GTFOBins](https://gtfobins.github.io/)-style abuse (arbitrary file reads, shell escapes, exec calls) are explicitly blocked.
+
+Builtins are referenced in `AllowedCommands` using the `rshell:` namespace prefix: for example, `rshell:cat`, `rshell:grep`.
+
+<Note>
+  Run `help` inside a script to print a list of all registered builtins at runtime. For detailed flag information, run `<command> --help`.
+</Note>
+
+Any command not in the list below returns exit code 127 with `<cmd>: not found` unless an `ExecHandler` is configured for external commands.
+
+## Quick reference
+
+| Command | Description |
+|---|---|
+| `break` | Exit the innermost `for` loop |
+| `cat` | Concatenate files to stdout |
+| `continue` | Skip to the next loop iteration |
+| `cut` | Remove sections from each line of files |
+| `echo` | Write arguments to stdout |
+| `exit` | Exit the shell with a status code |
+| `false` | Return exit code 1 |
+| `find` | Search for files in a directory hierarchy |
+| `grep` | Print lines that match patterns |
+| `head` | Output the first part of files |
+| `help` | List all available builtin commands |
+| `ip` | Show network interface addresses and link info |
+| `ls` | List directory contents |
+| `ping` | Send ICMP echo requests to a host |
+| `printf` | Format and print data to stdout |
+| `ps` | Report process status |
+| `sed` | Stream editor for filtering and transforming text |
+| `sort` | Sort lines of text files |
+| `ss` | Display network socket statistics |
+| `strings` | Print printable character sequences in files |
+| `tail` | Output the last part of files |
+| `test` / `[` | Evaluate conditional expressions |
+| `tr` | Translate, squeeze, or delete characters |
+| `true` | Return exit code 0 |
+| `uniq` | Report or omit repeated lines |
+| `wc` | Count lines, words, bytes, or characters |
+
+## Command reference
+
+<AccordionGroup>
+  <Accordion title="break — exit the innermost for loop">
+    ```bash
+    break
+    ```
+
+    Exits the innermost `for` loop immediately. Has no effect outside a loop (silently ignored). Use `continue` to skip to the next iteration instead.
+
+    ```bash
+    for f in *.log; do
+      grep -q ERROR "$f" && break
+    done
+    ```
+  </Accordion>
+
+  <Accordion title="cat [-AbeEnstTuv] [FILE]...">
+    ```bash
+    cat [OPTION]... [FILE]...
+    ```
+
+    Concatenates files to stdout. With no FILE, or when FILE is `-`, reads standard input.
+
+    | Flag | Description |
+    |---|---|
+    | `-n`, `--number` | Number all output lines |
+    | `-b`, `--number-nonblank` | Number only non-blank lines (overrides `-n`) |
+    | `-s`, `--squeeze-blank` | Suppress repeated blank lines |
+    | `-E`, `--show-ends` | Show `$` at end of each line |
+    | `-T`, `--show-tabs` | Show TAB characters as `^I` |
+    | `-v`, `--show-nonprinting` | Show non-printing characters with `^` and `M-` notation |
+    | `-A`, `--show-all` | Equivalent to `-vET` |
+    | `-e` | Equivalent to `-vE` |
+    | `-t` | Equivalent to `-vT` |
+    | `-u` | Ignored (accepted for POSIX compatibility) |
+
+    **Memory safety:** When line-processing flags are active, input is read line-by-line with a per-line cap of 1 MiB. Without flags, input is streamed in fixed-size chunks.
+
+    ```bash
+    cat /var/log/app.log
+    cat -n /etc/hosts
+    cat file1.txt file2.txt | grep ERROR
+    ```
+  </Accordion>
+
+  <Accordion title="continue — skip to the next loop iteration">
+    ```bash
+    continue
+    ```
+
+    Skips the remainder of the current `for` loop body and advances to the next iteration. Has no effect outside a loop.
+
+    ```bash
+    for f in *.txt; do
+      test -s "$f" || continue   # skip empty files
+      wc -l "$f"
+    done
+    ```
+  </Accordion>
+
+  <Accordion title="cut [-bcf] [OPTIONS] [FILE]...">
+    ```bash
+    cut [-b LIST|-c LIST|-f LIST] [-d DELIM] [-s] [-n] [--complement] [--output-delimiter=STRING] [FILE]...
+    ```
+
+    Removes sections from each line of files.
+
+    | Flag | Description |
+    |---|---|
+    | `-b LIST` | Select bytes |
+    | `-c LIST` | Select characters |
+    | `-f LIST` | Select fields |
+    | `-d DELIM` | Field delimiter (default: TAB) |
+    | `-s` | Suppress lines with no delimiter |
+    | `-n` | Do not split multi-byte characters |
+    | `--complement` | Complement the selection |
+    | `--output-delimiter=STRING` | Use STRING as the output delimiter |
+
+    ```bash
+    cut -d: -f1 /etc/passwd
+    ps -ef | cut -c1-10
+    ```
+  </Accordion>
+
+  <Accordion title="echo [-neE] [ARG]...">
+    ```bash
+    echo [-neE] [ARG]...
+    ```
+
+    Writes arguments to stdout, separated by spaces, followed by a newline.
+
+    | Flag | Description |
+    |---|---|
+    | `-n` | Suppress the trailing newline |
+    | `-e` | Enable backslash escape interpretation (`\n`, `\t`, etc.) |
+    | `-E` | Disable backslash escapes (default) |
+
+    ```bash
+    echo "hello world"
+    echo -n "no newline"
+    echo -e "line1\nline2"
+    ```
+
+    <Note>
+      `echo` treats flag-shaped literals like `-n` correctly when they are the only argument. If you need predictable formatted output, prefer `printf`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="exit [N]">
+    ```bash
+    exit [N]
+    ```
+
+    Exits the shell with status `N`. Defaults to 0. Inside a subshell `( )`, only the subshell exits; the parent script continues.
+
+    ```bash
+    test -f /data/config.json || exit 1
+    ```
+  </Accordion>
+
+  <Accordion title="false — return exit code 1">
+    ```bash
+    false
+    ```
+
+    Returns exit code 1. Useful in conditions and `||` chains.
+
+    ```bash
+    false || echo "fallback"
+    ```
+  </Accordion>
+
+  <Accordion title="find [-L] [-P] [PATH...] [EXPRESSION]">
+    ```bash
+    find [-L] [-P] [PATH...] [EXPRESSION]
+    ```
+
+    Searches for files in a directory hierarchy.
+
+    **Supported expressions:**
+
+    | Expression | Description |
+    |---|---|
+    | `-name PATTERN` | Match filename (case-sensitive) |
+    | `-iname PATTERN` | Match filename (case-insensitive) |
+    | `-path PATTERN` | Match full path |
+    | `-ipath PATTERN` | Match full path (case-insensitive) |
+    | `-type b\|c\|d\|f\|l\|p\|s` | Filter by file type |
+    | `-size N[ckMG]` | Filter by file size |
+    | `-empty` | Match empty files/directories |
+    | `-newer FILE` | Match files newer than FILE |
+    | `-mtime N` | Match by modification time (days) |
+    | `-mmin N` | Match by modification time (minutes) |
+    | `-perm MODE` | Filter by permissions |
+    | `-maxdepth N` | Limit descent depth |
+    | `-mindepth N` | Skip entries shallower than N |
+    | `-print` | Print matching paths (default) |
+    | `-print0` | Print paths separated by NUL |
+    | `-execdir CMD {} \;` | Execute command for each match |
+    | `-prune` | Prune directory from traversal |
+    | `-quit` | Stop after first match |
+    | `!`, `-a`, `-o`, `()` | Logical operators |
+
+    **Blocked flags (security):** `-exec` (unrestricted exec), `-delete` (filesystem modification), `-regex` (PCRE, ReDoS risk).
+
+    ```bash
+    find /data -name "*.log" -mtime -1
+    find /var/log -type f -size +1M
+    find . -name "*.go" -execdir wc -l {} \;
+    ```
+
+    <Warning>
+      `-exec` is blocked. Use `-execdir CMD {} \;` instead. `-execdir` is sandbox-safe because it resolves the binary relative to the matched file's directory rather than the shell's working directory.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="grep [-EFGivclLnHhoqsxw] PATTERN [FILE]...">
+    ```bash
+    grep [OPTION]... PATTERN [FILE]...
+    grep [OPTION]... -e PATTERN [-e PATTERN]... [FILE]...
+    ```
+
+    Prints lines that match patterns. Uses the RE2 regex engine, which guarantees linear-time matching and prevents ReDoS attacks.
+
+    | Flag | Description |
+    |---|---|
+    | `-E`, `--extended-regexp` | Use extended regular expressions (ERE) |
+    | `-F`, `--fixed-strings` | Interpret pattern as fixed strings |
+    | `-G`, `--basic-regexp` | Use basic regular expressions (BRE, default) |
+    | `-i`, `--ignore-case` | Case-insensitive matching |
+    | `-v`, `--invert-match` | Select non-matching lines |
+    | `-c`, `--count` | Print count of matching lines per file |
+    | `-l`, `--files-with-matches` | Print names of files with matches |
+    | `-L`, `--files-without-match` | Print names of files without matches |
+    | `-n`, `--line-number` | Prefix output with line numbers |
+    | `-H`, `--with-filename` | Always print filename prefix |
+    | `-h`, `--no-filename` | Suppress filename prefix |
+    | `-o`, `--only-matching` | Print only the matched part |
+    | `-q`, `--quiet` | Suppress output, exit code only |
+    | `-s`, `--no-messages` | Suppress error messages |
+    | `-x`, `--line-regexp` | Match whole lines only |
+    | `-w`, `--word-regexp` | Match whole words only |
+    | `-a`, `--text` | Treat binary files as text |
+    | `-e PATTERN` | Specify pattern (repeatable) |
+    | `-m NUM` | Stop after NUM matching lines |
+    | `-A NUM` | Print NUM lines after each match |
+    | `-B NUM` | Print NUM lines before each match |
+    | `-C NUM` | Print NUM lines of context |
+
+    Exit codes follow POSIX convention: 0 (match found), 1 (no match), 2 (error).
+
+    ```bash
+    grep -E "ERROR|WARN" /var/log/app.log
+    grep -rn "func main" /data/src
+    grep -c "^" /data/file.txt   # count lines
+    ```
+
+    <Note>
+      grep uses Go's RE2 engine for all regex modes. BRE patterns are automatically converted to RE2-compatible ERE. This ensures linear-time matching — no backtracking, no ReDoS.
+    </Note>
+  </Accordion>
+
+  <Accordion title="head [-n N|-c N] [-q|-v] [FILE]...">
+    ```bash
+    head [-n N|-c N] [-q|-v] [FILE]...
+    ```
+
+    Outputs the first part of files. Default: first 10 lines.
+
+    | Flag | Description |
+    |---|---|
+    | `-n N` | Output the first N lines |
+    | `-c N` | Output the first N bytes |
+    | `-q` | Suppress filename headers |
+    | `-v` | Always print filename headers |
+
+    **Blocked flags:** `-z`/`--zero-terminated`, `--follow`.
+
+    ```bash
+    head -n 20 /var/log/app.log
+    head -c 512 /data/file.bin | strings
+    ```
+  </Accordion>
+
+  <Accordion title="help — list available commands">
+    ```bash
+    help
+    ```
+
+    Displays all registered builtin commands with brief descriptions. The list is filtered to only show commands that are permitted under the current `AllowedCommands` policy.
+
+    For detailed flag information on any specific command, run:
+
+    ```bash
+    <command> --help
+    ```
+  </Accordion>
+
+  <Accordion title="ip [-o|-4|-6|--brief] addr|link [show] [dev IFNAME]">
+    ```bash
+    ip [-o|-4|-6|--brief] addr|link [show] [dev IFNAME]
+    ```
+
+    Shows network interface addresses and link-layer information. Read-only.
+
+    | Flag | Description |
+    |---|---|
+    | `-o` | Output each record on a single line |
+    | `-4` | Show IPv4 addresses only |
+    | `-6` | Show IPv6 addresses only |
+    | `--brief` | Show brief output |
+
+    **Blocked operations:** `add`, `del`, `flush`, `set` (write ops); `netns`, `-n` (namespace ops); `-b`/`-B`/`--force` (batch mode).
+
+    ```bash
+    ip addr show
+    ip -4 addr show dev eth0
+    ip link show
+    ```
+  </Accordion>
+
+  <Accordion title="ls [-1aAdFhlpRrSt] [--offset N] [--limit N] [FILE]...">
+    ```bash
+    ls [-1aAdFhlpRrSt] [--offset N] [--limit N] [FILE]...
+    ```
+
+    Lists directory contents.
+
+    | Flag | Description |
+    |---|---|
+    | `-1` | One entry per line |
+    | `-a` | Include hidden entries (starting with `.`) |
+    | `-A` | Include hidden entries except `.` and `..` |
+    | `-d` | List directories themselves, not their contents |
+    | `-F` | Append type indicator (`/`, `*`, `@`, etc.) |
+    | `-h` | Human-readable sizes with `-l` |
+    | `-l` | Long listing format |
+    | `-p` | Append `/` to directories |
+    | `-R` | Recurse into subdirectories |
+    | `-r` | Reverse sort order |
+    | `-S` | Sort by file size |
+    | `-t` | Sort by modification time |
+    | `--offset N` | Skip first N entries (pagination, single-directory only) |
+    | `--limit N` | Return at most N entries (capped at 1,000) |
+
+    `--offset` and `--limit` are non-standard rshell-specific pagination flags. They operate on filesystem order (not sorted order) for O(n) memory. They are silently ignored when `-R` is used or when multiple paths are given.
+
+    ```bash
+    ls -la /data
+    ls -t /var/log | head -5
+    ls --offset 100 --limit 50 /large-dir
+    ```
+  </Accordion>
+
+  <Accordion title="ping [-c N] [-W DURATION] [-i DURATION] [-q] [-4|-6] HOST">
+    ```bash
+    ping [-c N] [-W DURATION] [-i DURATION] [-q] [-4|-6] [-h] HOST
+    ```
+
+    Sends ICMP echo requests to a network host and reports round-trip statistics.
+
+    | Flag | Description |
+    |---|---|
+    | `-c N` | Number of packets to send (clamped to safe range) |
+    | `-W DURATION` | Wait timeout per packet (clamped to safe range) |
+    | `-i DURATION` | Interval between packets (clamped to safe range) |
+    | `-q` | Quiet output |
+    | `-4` | Force IPv4 |
+    | `-6` | Force IPv6 |
+
+    **Blocked flags:** `-f` (flood), `-b` (broadcast), `-s` (packet size), `-I` (interface), `-p` (pattern), `-R` (record route).
+
+    **Blocked addresses:** multicast addresses, unspecified addresses (`0.0.0.0`, `::`), and broadcast addresses (IPv4 last-octet `.255`). Count, wait, and interval values are clamped to safe ranges with a warning if exceeded.
+
+    ```bash
+    ping -c 3 8.8.8.8
+    ping -c 1 -W 2s example.com
+    ```
+  </Accordion>
+
+  <Accordion title="printf FORMAT [ARGUMENT]...">
+    ```bash
+    printf FORMAT [ARGUMENT]...
+    ```
+
+    Formats and prints data to stdout. The format string is reused for excess arguments.
+
+    **Supported format specifiers:** `%s`, `%b`, `%c`, `%d`, `%i`, `%o`, `%u`, `%x`, `%X`, `%e`, `%E`, `%f`, `%F`, `%g`, `%G`, `%%`.
+
+    **Blocked:** `%n` (memory write, security risk); `-v` flag.
+
+    ```bash
+    printf "%s\n" "hello"
+    printf "%d items\n" 42
+    printf "%-10s %5d\n" name 99
+    ```
+  </Accordion>
+
+  <Accordion title="ps [-e|-A] [-f] [-p PIDLIST]">
+    ```bash
+    ps [-e|-A] [-f] [-p PIDLIST]
+    ```
+
+    Reports process status.
+
+    | Flag | Description |
+    |---|---|
+    | `-e`, `-A` | Show all processes |
+    | `-f` | Full-format listing with UID, PPID, STIME columns |
+    | `-p PIDLIST` | Show only processes with the given PIDs |
+
+    Default output shows current-session processes. On Linux, reads from `/proc` (the path can be overridden with the `ProcPath` runner option). Not available on macOS.
+
+    ```bash
+    ps -ef
+    ps -p 1,2,3
+    ```
+  </Accordion>
+
+  <Accordion title="sed [-n] [-e SCRIPT] [-E|-r] [SCRIPT] [FILE]...">
+    ```bash
+    sed [-n] [-e SCRIPT] [-E|-r] [SCRIPT] [FILE]...
+    ```
+
+    Stream editor for filtering and transforming text. Uses the RE2 regex engine.
+
+    | Flag | Description |
+    |---|---|
+    | `-n` | Suppress automatic printing of pattern space |
+    | `-e SCRIPT` | Add script to execute (repeatable) |
+    | `-E`, `-r` | Use extended regular expressions |
+
+    **Blocked flags:** `-i` (in-place edit), `-f` (script file).
+
+    **Blocked commands:** `e` (exec), `w` (write file), `W` (append file), `r` (read file), `R` (read one line from file) — all blocked to prevent filesystem modification and arbitrary execution.
+
+    ```bash
+    sed 's/error/ERROR/g' /var/log/app.log
+    sed -n '/^ERROR/p' /var/log/app.log
+    cat data.txt | sed -E 's/([0-9]+)/NUM/g'
+    ```
+  </Accordion>
+
+  <Accordion title="sort [-rnubfds] [-k KEYDEF] [-t SEP] [-c|-C] [FILE]...">
+    ```bash
+    sort [-rnubfds] [-k KEYDEF] [-t SEP] [-c|-C] [FILE]...
+    ```
+
+    Sorts lines of text files.
+
+    | Flag | Description |
+    |---|---|
+    | `-r` | Reverse sort order |
+    | `-n` | Numeric sort |
+    | `-u` | Output only unique lines |
+    | `-b` | Ignore leading blanks |
+    | `-f` | Case-insensitive sort |
+    | `-d` | Dictionary order |
+    | `-s` | Stable sort |
+    | `-k KEYDEF` | Sort by key field |
+    | `-t SEP` | Field separator |
+    | `-c` | Check if input is sorted (exit 1 if not) |
+    | `-C` | Check silently |
+
+    **Blocked flags:** `-o` (output file), `--compress-program`, `-T` (temp directory) — all blocked to prevent filesystem writes or external process execution.
+
+    ```bash
+    sort -n /data/numbers.txt
+    ps -ef | sort -k 2 -n
+    sort -u /data/words.txt
+    ```
+  </Accordion>
+
+  <Accordion title="ss [-tuaxlans4689Hoehs] [OPTION]...">
+    ```bash
+    ss [-tuaxlans4689Hoehs] [OPTION]...
+    ```
+
+    Displays network socket statistics. Reads kernel socket state directly (Linux: `/proc/net/`; macOS: sysctl; Windows: `iphlpapi.dll`).
+
+    | Flag | Description |
+    |---|---|
+    | `-t` | Show TCP sockets |
+    | `-u` | Show UDP sockets |
+    | `-a` | Show all sockets (listening and non-listening) |
+    | `-x` | Show Unix domain sockets |
+    | `-l` | Show listening sockets only |
+    | `-n` | Numeric addresses (no DNS resolution) |
+    | `-s` | Show summary statistics |
+    | `-4` | IPv4 only |
+    | `-6` | IPv6 only |
+    | `-H` | Suppress header |
+    | `-o` | Show timer information |
+    | `-e` | Show extended socket information |
+
+    **Blocked flags (GTFOBins / security):**
+    - `-F`/`--filter` — can read arbitrary files
+    - `-p`/`--processes` — exposes PID-to-socket mappings (PID disclosure)
+    - `-K`/`--kill` — can terminate connections
+    - `-E`/`--events` — continuously streams socket events
+    - `-N`/`--net` — network namespace switching
+
+    ```bash
+    ss -tlnp
+    ss -u -a
+    ss -s
+    ```
+  </Accordion>
+
+  <Accordion title="strings [-a] [-n MIN] [-t o|d|x] [-o] [-f] [-s SEP] [FILE]...">
+    ```bash
+    strings [-a] [-n MIN] [-t o|d|x] [-o] [-f] [-s SEP] [FILE]...
+    ```
+
+    Prints printable character sequences in files. Default minimum sequence length is 4 characters.
+
+    | Flag | Description |
+    |---|---|
+    | `-a` | Scan entire file (default behavior) |
+    | `-n MIN` | Minimum string length (default 4) |
+    | `-t o\|d\|x` | Print offset in octal, decimal, or hex |
+    | `-o` | Equivalent to `-t o` |
+    | `-f` | Print filename prefix before each string |
+    | `-s SEP` | Use SEP as separator between strings |
+
+    ```bash
+    strings /data/binary.bin
+    strings -n 8 /data/file
+    strings -t x /data/binary.bin | head
+    ```
+  </Accordion>
+
+  <Accordion title="tail [-n N|-c N] [-q|-v] [-z] [FILE]...">
+    ```bash
+    tail [-n N|-c N] [-q|-v] [-z] [FILE]...
+    ```
+
+    Outputs the last part of files. Default: last 10 lines. Supports `+N` offset mode to output from line N onward.
+
+    | Flag | Description |
+    |---|---|
+    | `-n N` | Output the last N lines (or from line N with `+N`) |
+    | `-c N` | Output the last N bytes |
+    | `-q` | Suppress filename headers |
+    | `-v` | Always print filename headers |
+    | `-z` | Use NUL as line delimiter |
+
+    **Blocked flag:** `-f`/`--follow` — file following is blocked to prevent persistent monitoring loops.
+
+    ```bash
+    tail -n 50 /var/log/app.log
+    tail -n +100 /data/file.txt   # output from line 100 onward
+    tail -c 1024 /data/file.bin
+    ```
+  </Accordion>
+
+  <Accordion title="test EXPRESSION / [ EXPRESSION ]">
+    ```bash
+    test EXPRESSION
+    [ EXPRESSION ]
+    ```
+
+    Evaluates a conditional expression and returns exit code 0 (true) or 1 (false).
+
+    **File tests:**
+
+    | Expression | Meaning |
+    |---|---|
+    | `-e FILE` | File exists |
+    | `-f FILE` | Regular file |
+    | `-d FILE` | Directory |
+    | `-r FILE` | Readable |
+    | `-w FILE` | Writable |
+    | `-x FILE` | Executable |
+    | `-s FILE` | Non-empty file |
+    | `-L FILE` | Symbolic link |
+    | `-z FILE` | Zero-size file |
+
+    **String tests:**
+
+    | Expression | Meaning |
+    |---|---|
+    | `-z STR` | String is empty |
+    | `-n STR` | String is non-empty |
+    | `STR1 = STR2` | Strings are equal |
+    | `STR1 != STR2` | Strings differ |
+
+    **Integer tests:**
+
+    | Expression | Meaning |
+    |---|---|
+    | `N1 -eq N2` | Equal |
+    | `N1 -ne N2` | Not equal |
+    | `N1 -lt N2` | Less than |
+    | `N1 -le N2` | Less than or equal |
+    | `N1 -gt N2` | Greater than |
+    | `N1 -ge N2` | Greater than or equal |
+
+    **Logical operators:** `!`, `-a`, `-o`.
+
+    ```bash
+    test -f /data/config.json && cat /data/config.json
+    [ -z "$RESULT" ] && echo "empty"
+    [ "$STATUS" = "ok" -o "$STATUS" = "done" ] && exit 0
+    ```
+
+    <Note>
+      The extended `[[ ... ]]` test form is a bash extension and is not supported in rshell. Use `test` or `[ ]` instead.
+    </Note>
+  </Accordion>
+
+  <Accordion title="tr [-cdsCt] SET1 [SET2]">
+    ```bash
+    tr [-cdsCt] SET1 [SET2]
+    ```
+
+    Translates, squeezes, or deletes characters from stdin.
+
+    | Flag | Description |
+    |---|---|
+    | `-c` | Use the complement of SET1 |
+    | `-d` | Delete characters in SET1 |
+    | `-s` | Squeeze repeated characters in SET2 |
+    | `-C` | Same as `-c` (POSIX complement) |
+    | `-t` | Truncate SET1 to length of SET2 |
+
+    ```bash
+    echo "Hello World" | tr '[:lower:]' '[:upper:]'
+    echo "aabbcc" | tr -s 'a-c'
+    cat file.txt | tr -d '\r'    # strip carriage returns
+    ```
+  </Accordion>
+
+  <Accordion title="true — return exit code 0">
+    ```bash
+    true
+    ```
+
+    Returns exit code 0. Useful as a no-op or in condition chains.
+
+    ```bash
+    true && echo "always runs"
+    ```
+  </Accordion>
+
+  <Accordion title="uniq [OPTION]... [INPUT]">
+    ```bash
+    uniq [OPTION]... [INPUT]
+    ```
+
+    Reports or omits repeated lines. Input is typically pre-sorted.
+
+    ```bash
+    sort /data/words.txt | uniq
+    sort /data/words.txt | uniq -c | sort -rn
+    ```
+  </Accordion>
+
+  <Accordion title="wc [-lwcmL] [FILE]...">
+    ```bash
+    wc [-l] [-w] [-c] [-m] [-L] [FILE]...
+    ```
+
+    Counts lines, words, bytes, characters, or maximum line length.
+
+    | Flag | Description |
+    |---|---|
+    | `-l` | Count lines |
+    | `-w` | Count words |
+    | `-c` | Count bytes |
+    | `-m` | Count characters |
+    | `-L` | Print length of longest line |
+
+    ```bash
+    wc -l /var/log/app.log
+    find /data -name "*.go" | xargs wc -l
+    cat /data/file.txt | wc -w
+    ```
+  </Accordion>
+</AccordionGroup>

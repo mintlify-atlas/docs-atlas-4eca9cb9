@@ -1,0 +1,217 @@
+---
+title: "allowedpaths.Sandbox"
+description: "Filesystem sandbox using os.Root for safe directory-scoped file access"
+---
+
+```go
+type Sandbox struct { ... }
+```
+
+`Sandbox` restricts filesystem access to a set of allowed directories. Enforcement is backed by `os.Root` (Go 1.24+), which uses `openat` syscalls for atomic path validation — immune to symlink races and `..` traversal attacks. `os.Root` handles are opened eagerly at construction time, pinning the allowed directories before any script runs.
+
+<Note>
+  In normal usage, you configure the sandbox via [`interp.AllowedPaths`](/api/interp/runner-options#allowedpaths) rather than constructing a `Sandbox` directly. Use this package directly only when you need lower-level sandbox access outside of a Runner.
+</Note>
+
+## Constant
+
+```go
+const MaxGlobEntries = 100_000
+```
+
+`MaxGlobEntries` is the maximum number of directory entries read per single glob expansion step. `ReadDirForGlob` returns an error for directories that exceed this limit to prevent memory exhaustion during pattern matching.
+
+## Constructor
+
+### New
+
+```go
+func New(paths []string) (*Sandbox, error)
+```
+
+Validates each path and opens an `os.Root` handle for it. All handles are opened before `New` returns, so the allowed directories are pinned atomically.
+
+<ParamField path="paths" type="[]string">
+  Absolute directory paths to allow. An empty slice creates a Sandbox that blocks all access.
+</ParamField>
+
+**Returns:** `(*Sandbox, error)` — error if any path cannot be resolved, does not exist, cannot be opened as `os.Root`, or is not a directory.
+
+```go
+sb, err := allowedpaths.New([]string{"/data/input", "/tmp/work"})
+if err != nil {
+    return err
+}
+defer sb.Close()
+```
+
+## Methods
+
+### Access
+
+```go
+func (s *Sandbox) Access(path string, cwd string, mode uint32) error
+```
+
+Checks whether `path` is accessible under `mode`. All operations go through `os.Root` to stay within the sandbox.
+
+<ParamField path="path" type="string">
+  The path to check. May be relative; resolved against `cwd`.
+</ParamField>
+
+<ParamField path="cwd" type="string">
+  Current working directory, used to resolve relative paths.
+</ParamField>
+
+<ParamField path="mode" type="uint32">
+  Permission bits to check. Combine flags as needed:
+  - `0x04` — read
+  - `0x02` — write
+  - `0x01` — execute
+</ParamField>
+
+Returns `*os.PathError` with `os.ErrPermission` if the path is outside all allowed roots or the permission check fails.
+
+---
+
+### Open
+
+```go
+func (s *Sandbox) Open(path string, cwd string, flag int, perm os.FileMode) (io.ReadWriteCloser, error)
+```
+
+Opens a file within the sandbox. Only read-only access is permitted; any write flags (anything other than `os.O_RDONLY`) are rejected.
+
+<ParamField path="path" type="string">
+  File path to open. May be relative; resolved against `cwd`.
+</ParamField>
+
+<ParamField path="cwd" type="string">
+  Current working directory for resolving relative paths.
+</ParamField>
+
+<ParamField path="flag" type="int">
+  File open flags. Must be `os.O_RDONLY`. Any other value returns `*os.PathError` with `os.ErrPermission`.
+</ParamField>
+
+<ParamField path="perm" type="os.FileMode">
+  File permission mode (used when creating files, not applicable for read-only opens).
+</ParamField>
+
+---
+
+### ReadDir
+
+```go
+func (s *Sandbox) ReadDir(path string, cwd string) ([]fs.DirEntry, error)
+```
+
+Reads all directory entries within the sandbox, sorted by name. Returns `*os.PathError` with `os.ErrPermission` if the path is outside the allowed roots.
+
+---
+
+### ReadDirForGlob
+
+```go
+func (s *Sandbox) ReadDirForGlob(path string, cwd string) ([]fs.DirEntry, error)
+```
+
+Like `ReadDir`, but capped at `MaxGlobEntries` (100,000). Returns an error if the directory contains more entries than the limit, preventing memory exhaustion during glob expansion. Entries are sorted by name.
+
+---
+
+### ReadDirLimited
+
+```go
+func (s *Sandbox) ReadDirLimited(path string, cwd string, offset, maxRead int) ([]fs.DirEntry, bool, error)
+```
+
+Reads directory entries in a window, skipping `offset` raw entries and returning up to `maxRead` entries sorted by name.
+
+<ParamField path="path" type="string">
+  Directory path to read.
+</ParamField>
+
+<ParamField path="cwd" type="string">
+  Current working directory for resolving relative paths.
+</ParamField>
+
+<ParamField path="offset" type="int">
+  Number of raw (unsorted) entries to skip. Does not correspond to positions in the sorted output — pages may overlap or miss entries between calls.
+</ParamField>
+
+<ParamField path="maxRead" type="int">
+  Maximum entries to return.
+</ParamField>
+
+**Returns:** `(entries []fs.DirEntry, truncated bool, err error)`. When `truncated` is true, the directory contained more entries beyond the returned set.
+
+<Warning>
+  The `offset` parameter skips raw directory entries before sorting. Iterating a large directory by incrementing `offset` will not produce a globally-correct sorted listing — entries may appear in different pages depending on the kernel's read order.
+</Warning>
+
+---
+
+### Stat
+
+```go
+func (s *Sandbox) Stat(path string, cwd string) (fs.FileInfo, error)
+```
+
+Returns file metadata for `path`, following symbolic links. Uses `os.Root.Stat` for metadata-only access — no file descriptor is opened.
+
+---
+
+### Lstat
+
+```go
+func (s *Sandbox) Lstat(path string, cwd string) (fs.FileInfo, error)
+```
+
+Like `Stat`, but does not follow symbolic links — the returned `fs.FileInfo` describes the link itself rather than its target.
+
+---
+
+### IsDirEmpty
+
+```go
+func (s *Sandbox) IsDirEmpty(path string, cwd string) (bool, error)
+```
+
+Reports whether the directory at `path` is empty by reading at most one entry. More efficient than `ReadDir` when only emptiness needs to be determined.
+
+---
+
+### OpenDir
+
+```go
+func (s *Sandbox) OpenDir(path string, cwd string) (fs.ReadDirFile, error)
+```
+
+Opens a directory for incremental reading via `ReadDir(n)`. The returned `fs.ReadDirFile` exposes only read-only directory methods. The caller must close the handle when done.
+
+---
+
+### Close
+
+```go
+func (s *Sandbox) Close() error
+```
+
+Releases all `os.Root` file descriptors. Safe to call multiple times; subsequent calls are no-ops. Always defer `Close` after `New`.
+
+## Utility function
+
+### IsDevNull
+
+```go
+func IsDevNull(path string) bool
+```
+
+Reports whether `path` refers to the platform's null device (`/dev/null` on Unix, `NUL` on Windows). The check is case-insensitive on Windows.
+
+```go
+if allowedpaths.IsDevNull(path) {
+    // path is the null device — always safe to open
+}
+```

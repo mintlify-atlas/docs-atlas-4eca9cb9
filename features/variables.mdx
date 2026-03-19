@@ -1,0 +1,215 @@
+---
+title: "Variables and expansion"
+description: "Variable assignment, expansion, command substitution, and which parameter expansion forms are blocked in rshell."
+---
+
+rshell supports a minimal, safe subset of shell variable features. The guiding principle is that anything that could be used to exfiltrate data, run arbitrary code, or bypass the sandbox is blocked.
+
+## Supported features
+
+### Assignment
+
+Assign a value to a variable with `VAR=value`. Variable names follow standard shell rules (letters, digits, underscore; cannot start with a digit).
+
+```bash
+MY_DIR=/data/logs
+STATUS=ok
+```
+
+### Expansion
+
+Expand a variable using `$VAR` or `${VAR}`.
+
+```bash
+echo $MY_DIR
+echo ${STATUS}
+```
+
+### The `$?` special variable
+
+`$?` holds the exit code of the last command. It is the only special variable supported by rshell.
+
+```bash
+grep -q ERROR /var/log/app.log
+if [ $? -eq 0 ]; then
+  echo "errors found"
+fi
+```
+
+<Tip>
+  You can also use `&&` and `||` directly on the command rather than checking `$?` explicitly:
+
+  ```bash
+  grep -q ERROR /var/log/app.log && echo "errors found"
+  ```
+</Tip>
+
+### Inline assignment
+
+You can assign a variable scoped to a single command by prefixing the assignment:
+
+```bash
+MY_VAR=hello echo $MY_VAR
+```
+
+The assignment applies only to that command's environment and does not persist.
+
+### Command substitution
+
+Capture the stdout of a command with `$(cmd)` or the backtick form `` `cmd` ``.
+
+```bash
+FILE_COUNT=$(find /data -name "*.log" | wc -l)
+echo "Found $FILE_COUNT log files"
+
+SIZE=`wc -c < /data/file.txt`
+```
+
+**Behavior details:**
+
+- Captures stdout only; stderr is not captured
+- Trailing newlines are stripped (standard shell behavior)
+- Output is capped at 1 MiB; scripts that produce more are rejected
+
+### `$(<file)` file read shortcut
+
+`$(<file)` is a shorthand for reading a file's content directly into a variable without spawning a subprocess. It is more efficient than `$(cat file)`.
+
+```bash
+CONTENT=$(</data/config.txt)
+echo "$CONTENT" | grep key=
+```
+
+The file must be within `AllowedPaths`.
+
+## Blocked features
+
+<Warning>
+  The following variable features are blocked at the AST validation stage and return exit code 2 before any command executes. Scripts that depend on these patterns must be rewritten.
+</Warning>
+
+### Arithmetic expansion
+
+`$(( expr ))` is blocked. Arithmetic is not supported.
+
+```bash
+# These are blocked — exit code 2:
+result=$(( 1 + 2 ))
+(( count++ ))
+```
+
+### Arrays
+
+Array assignment and indexed access are blocked.
+
+```bash
+# Blocked — exit code 2:
+arr=(a b c)
+arr[0]=x
+echo ${arr[1]}
+```
+
+### Append assignment
+
+`VAR+=value` is blocked.
+
+```bash
+# Blocked — exit code 2:
+LIST+=item
+```
+
+### Parameter expansion operations
+
+All `${var:...}` expansion forms are blocked, including:
+
+| Form | Description |
+|---|---|
+| `${#var}` | String length |
+| `${var:-default}` | Default if unset or empty |
+| `${var:=default}` | Assign default if unset |
+| `${var:?msg}` | Error if unset |
+| `${var:+alt}` | Alternate value if set |
+| `${var:offset}` | Substring |
+| `${var/pattern/repl}` | Pattern substitution |
+| `${var#prefix}` | Remove prefix |
+| `${var%suffix}` | Remove suffix |
+| `${!var}` | Indirect expansion |
+| `${!prefix*}` | Name expansion |
+| Case conversion forms | `${var^^}`, `${var,,}` |
+
+```bash
+# All blocked — exit code 2:
+echo ${VAR:-default}
+echo ${#MY_STRING}
+echo ${PATH/usr/opt}
+```
+
+### Positional parameters
+
+Positional parameters are not supported. rshell scripts do not accept arguments.
+
+```bash
+# Blocked — exit code 2:
+echo $1
+echo $@
+echo $*
+echo $#
+echo $0
+```
+
+### Other special variables
+
+`$!` (last background PID) and `$LINENO` are blocked. Background execution is not supported, and `$LINENO` is not tracked.
+
+```bash
+# Blocked — exit code 2:
+echo $!
+echo $LINENO
+```
+
+## Supported vs. blocked at a glance
+
+<Tabs>
+  <Tab title="Supported">
+    ```bash
+    # Simple assignment
+    DIR=/data/logs
+
+    # Expansion
+    echo $DIR
+    echo ${DIR}
+
+    # Last exit code
+    echo $?
+
+    # Inline assignment
+    KEY=value env
+
+    # Command substitution
+    OUT=$(grep ERROR /var/log/app.log | wc -l)
+
+    # File read shortcut
+    BODY=$(</data/request.json)
+    ```
+  </Tab>
+  <Tab title="Blocked">
+    ```bash
+    # Arithmetic — exit code 2
+    result=$(( 1 + 2 ))
+
+    # Arrays — exit code 2
+    arr=(a b c)
+
+    # Append — exit code 2
+    VAR+=more
+
+    # Parameter ops — exit code 2
+    echo ${VAR:-default}
+    echo ${#VAR}
+
+    # Positional params — exit code 2
+    echo $1
+    echo $@
+    ```
+  </Tab>
+</Tabs>

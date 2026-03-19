@@ -1,0 +1,233 @@
+---
+title: "Control flow"
+description: "Supported and blocked control flow constructs in rshell — for loops, conditionals, subshells, and what is intentionally absent."
+---
+
+rshell supports a focused set of control flow constructs that cover the needs of typical AI agent scripts. Constructs that would allow unbounded loops, arbitrary recursion, or persistent side effects are blocked.
+
+## Supported constructs
+
+### `for` loops
+
+```bash
+for VAR in WORDS; do
+  CMDS
+done
+```
+
+Iterates over a whitespace-separated list of words. The word list supports glob expansion.
+
+```bash
+for f in /data/logs/*.log; do
+  wc -l "$f"
+done
+
+for name in alice bob carol; do
+  echo "hello $name"
+done
+```
+
+Use `break` to exit the loop early, or `continue` to skip to the next iteration:
+
+```bash
+for f in /data/*.csv; do
+  test -s "$f" || continue      # skip empty files
+  grep -q ERROR "$f" && break   # stop on first file with errors
+  echo "ok: $f"
+done
+```
+
+### `if` / `elif` / `else`
+
+```bash
+if CONDITION; then
+  CMDS
+elif CONDITION; then
+  CMDS
+else
+  CMDS
+fi
+```
+
+The condition is any command; the branch is taken when the command exits 0.
+
+```bash
+if grep -q ERROR /var/log/app.log; then
+  echo "errors found"
+elif grep -q WARN /var/log/app.log; then
+  echo "warnings found"
+else
+  echo "log is clean"
+fi
+```
+
+### `&&` and `||` (short-circuit lists)
+
+`&&` runs the right side only if the left side exits 0. `||` runs the right side only if the left side exits non-zero.
+
+```bash
+test -f /data/config.json && cat /data/config.json
+grep -q ERROR log.txt || echo "no errors"
+```
+
+Chain multiple commands:
+
+```bash
+test -d /data && find /data -name "*.log" | wc -l && echo "done"
+```
+
+### `!` (negation)
+
+`!` inverts the exit code of the following command or pipeline.
+
+```bash
+! grep -q ERROR /var/log/app.log && echo "log is clean"
+```
+
+### `{ }` brace groups
+
+A brace group runs commands in the current shell environment. It is useful for grouping commands that share a redirect or for combining multiple commands in a `&&`/`||` chain.
+
+```bash
+{ echo "start"; cat /data/file.txt; echo "end"; } > /dev/null
+
+test -f /data/config.json && { cat /data/config.json | grep key; echo "done"; }
+```
+
+### `;` and newline as separators
+
+Commands can be separated by `;` or a newline. Both are equivalent.
+
+```bash
+echo "a"; echo "b"; echo "c"
+```
+
+### Subshells `( )`
+
+A subshell runs commands in an isolated child environment.
+
+```bash
+( CMDS )
+```
+
+**Isolation behavior:**
+
+- Variable changes inside the subshell do **not** propagate to the parent
+- `exit` inside the subshell does **not** terminate the parent script
+- File descriptor changes (redirections) are scoped to the subshell
+
+```bash
+RESULT=initial
+( RESULT=changed; echo "inside: $RESULT" )
+echo "outside: $RESULT"   # prints: outside: initial
+
+# Use a subshell to safely cd and run commands without affecting the parent
+( cd /data && find . -name "*.log" )
+```
+
+<Note>
+  rshell does not support `cd` as a builtin. The subshell isolation example above is illustrative; use `find PATH` or `ls PATH` with explicit paths instead.
+</Note>
+
+## Blocked constructs
+
+<Warning>
+  The following constructs are blocked by the AST validator before any command executes. Scripts using them return exit code 2.
+</Warning>
+
+### `while` and `until` loops
+
+`while` and `until` are blocked to prevent unbounded execution loops. Use a `for` loop over a known list instead.
+
+```bash
+# Blocked — exit code 2:
+while true; do echo "forever"; done
+until false; do echo "forever"; done
+```
+
+### `case`
+
+```bash
+# Blocked — exit code 2:
+case $VAR in
+  foo) echo "foo" ;;
+esac
+```
+
+Use `if`/`elif`/`else` chains instead.
+
+### `select`
+
+Interactive menu loops are blocked.
+
+```bash
+# Blocked — exit code 2:
+select opt in a b c; do echo $opt; done
+```
+
+### C-style `for` loops
+
+```bash
+# Blocked — exit code 2:
+for (( i=0; i<10; i++ )); do echo $i; done
+```
+
+C-style for loops require arithmetic, which is also blocked. Use a `for VAR in` loop over a word list.
+
+### Functions
+
+Function definitions are blocked. rshell scripts are flat — there is no call stack.
+
+```bash
+# Blocked — exit code 2:
+myfunc() { echo "hello"; }
+function myfunc { echo "hello"; }
+```
+
+## Supported vs. blocked at a glance
+
+<Tabs>
+  <Tab title="Supported">
+    ```bash
+    # for loop with glob
+    for f in /data/*.log; do
+      grep ERROR "$f"
+    done
+
+    # conditional
+    if test -f /data/config.json; then
+      cat /data/config.json
+    fi
+
+    # short-circuit
+    test -d /data && ls /data
+
+    # negation
+    ! test -f /tmp/lock && echo "no lock"
+
+    # brace group
+    { cat a.txt; cat b.txt; } | wc -l
+
+    # subshell
+    ( find /data -name "*.log" | wc -l )
+    ```
+  </Tab>
+  <Tab title="Blocked">
+    ```bash
+    # while — exit code 2
+    while true; do sleep 1; done
+
+    # until — exit code 2
+    until false; do echo loop; done
+
+    # case — exit code 2
+    case $VAR in foo) echo foo ;; esac
+
+    # C-style for — exit code 2
+    for (( i=0; i<10; i++ )); do echo $i; done
+
+    # functions — exit code 2
+    myfunc() { echo hello; }
+    ```
+  </Tab>
+</Tabs>

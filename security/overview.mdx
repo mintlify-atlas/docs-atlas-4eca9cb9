@@ -1,0 +1,99 @@
+---
+title: "Security model overview"
+description: "How rshell enforces a default-deny security model across commands, filesystem access, environment variables, and output redirections."
+---
+
+rshell is built for one specific threat: an AI agent that executes shell commands influenced by user-provided input. In that scenario, a general-purpose shell is dangerous — it can read arbitrary files, run any binary, inherit secrets from the host environment, and write output anywhere the process has permission. rshell inverts the default by blocking everything and requiring explicit opt-in for each resource the shell can touch.
+
+The security model has four independent enforcement layers. Each layer is default-deny and must be opted into separately.
+
+## The four layers
+
+| Resource | Default | How to enable |
+|---|---|---|
+| Command execution | Blocked — exit code 127 | `AllowedCommands([]string{"rshell:cat"})` |
+| External commands | Blocked — exit code 127 | Provide an `ExecHandler` |
+| Filesystem access | Blocked | `AllowedPaths([]string{"/my/dir"})` |
+| Environment variables | Empty — no host env inherited | `Env("KEY=value")` |
+| Output redirections | Only `/dev/null` allowed — exit code 2 for other targets | Not configurable — by design |
+
+Each layer is enforced independently. Allowing commands does not enable filesystem access; enabling filesystem access does not expose environment variables. You must explicitly opt in to each dimension.
+
+## The AST validator
+
+Before any node in the parsed shell script is executed, rshell walks the full abstract syntax tree (AST) using `validateNode`. If any blocked construct is found, execution is halted immediately and exit code 2 is returned — no commands run at all.
+
+The validator catches these constructs before execution:
+
+- **Arithmetic**: `$(( expr ))` and `(( expr ))` commands
+- **Background execution**: `cmd &`
+- **Process substitution**: `<(cmd)` and `>(cmd)`
+- **Write redirections**: `>file`, `>>file`, `&>file` to any target other than `/dev/null`
+- **Blocked loops**: `while`, `until`, C-style `for ((...))`, `select`
+- **Blocked declarations**: `export`, `readonly`, `local`, `declare`
+- **`let` commands**
+- **Functions**: `function foo {}` and `foo() {}`
+- **Positional parameters**: `$1`–`$9`, `$#`, `$@`, `$*`, `$0`, `$!`
+- **Parameter expansion operations**: `${var:-default}`, `${var/pat/repl}`, `${#var}`, `${var:offset}`, arrays
+- **Extended globbing**: `?(pat)`, `+(pat)`, `*(pat)`, etc.
+- **Tilde expansion**: `~`, `~user` (prevents host user info disclosure)
+- **Here-strings**: `<<<`
+- **Coprocesses**: `coproc`
+- **`|&` pipe**: combined stdout+stderr pipe operator
+
+The validator is a defense-in-depth layer. Even if an execution-time check had a bug, blocked syntax never reaches the execution engine.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Builtin error (e.g., wrong arguments, file not found) |
+| `2` | Blocked syntax or disallowed redirect — caught by AST validator |
+| `127` | Command not allowed (not in `AllowedCommands`) |
+
+Exit code 2 is specifically reserved for security-policy violations detected before execution. This lets callers distinguish a security block from an ordinary command error.
+
+## Threat model
+
+rshell is designed to safely run shell commands that are generated or influenced by an AI agent. The primary risks this addresses:
+
+- **Prompt injection**: an agent's input contains a command name or path that looks like a trusted binary. The `rshell:` namespace prefix in `AllowedCommands` forces explicit allowlisting that cannot be confused with user-controlled strings.
+- **Filesystem escape**: an agent tries to read or write files outside the intended workspace. `AllowedPaths` uses `os.Root` (`openat` syscalls) to make escape impossible at the kernel level — symlink traversal, `..` sequences, and TOCTOU races are all neutralized.
+- **Credential exfiltration**: an agent reads the host process environment and leaks API keys or tokens. The empty-by-default environment means no secrets are available unless explicitly passed.
+- **Data exfiltration via redirections**: an agent tries to write command output to a file. All output redirections to non-`/dev/null` paths are blocked by the AST validator before execution.
+
+## Security pages
+
+<CardGroup cols={2}>
+  <Card title="Allowed commands" icon="shield-check" href="/security/allowed-commands">
+    How the `rshell:` namespace prefix works and which error cases are enforced.
+  </Card>
+  <Card title="Filesystem sandboxing" icon="folder-lock" href="/security/allowed-paths">
+    How `os.Root` pins directory handles at construction time and what operations are restricted.
+  </Card>
+  <Card title="Environment variables" icon="key" href="/security/environment">
+    Why the environment is empty by default and how to pass variables safely.
+  </Card>
+  <Card title="Output redirections" icon="arrow-right-from-bracket" href="/security/overview#output-redirections">
+    Why only `/dev/null` is a permitted redirect target.
+  </Card>
+</CardGroup>
+
+## Output redirections
+
+Output redirections are restricted by the AST validator before execution. The only permitted redirect target is `/dev/null` (or `NUL` on Windows).
+
+Permitted redirect forms:
+
+```bash
+cmd > /dev/null      # discard stdout
+cmd 2> /dev/null     # discard stderr
+cmd &> /dev/null     # discard stdout and stderr
+cmd >> /dev/null     # append to /dev/null (same as discard)
+cmd 2>&1             # redirect stderr to stdout
+```
+
+All other output redirect targets — including variable-expanded paths like `> $OUTFILE` — are rejected at AST validation with exit code 2. The target must be a static literal; dynamic forms cannot be used to smuggle a path past the validator.
+
+Write access through `AllowedPaths` is also always blocked as a defense-in-depth measure: even if a redirect were somehow allowed past validation, the `Open` implementation in the sandbox rejects any flag other than `O_RDONLY`.

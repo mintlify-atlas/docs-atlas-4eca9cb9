@@ -1,0 +1,204 @@
+---
+title: "Quoting and expansion"
+description: "Single quotes, double quotes, globbing, line continuation, and comments in rshell — plus what forms of expansion are blocked."
+---
+
+rshell supports the standard POSIX quoting and expansion mechanisms needed for everyday scripts, while blocking forms that could be used to escape the sandbox or disclose host information.
+
+## Quoting
+
+### Single quotes
+
+Single quotes preserve every character literally. No expansion, no backslash processing, no special characters.
+
+```bash
+echo 'hello $USER'        # prints: hello $USER
+echo 'no * expansion'     # prints: no * expansion
+grep 'exact[0-9]' /data/file.txt
+```
+
+Single quotes cannot contain a single quote character (there is no escape inside single quotes). Split the string if you need a literal single quote:
+
+```bash
+echo 'it'\''s here'
+```
+
+### Double quotes
+
+Double quotes allow `$VAR` and `${VAR}` expansion and command substitution `$(cmd)`, but suppress glob expansion and most other special characters.
+
+```bash
+DIR=/data/logs
+echo "searching in $DIR"
+
+COUNT=$(wc -l < /data/file.txt)
+echo "line count: $COUNT"
+```
+
+Backslash can escape `$`, `` ` ``, `"`, `\`, and newline inside double quotes.
+
+```bash
+echo "a literal \$dollar sign"
+```
+
+### No quoting
+
+Unquoted words undergo word splitting and glob expansion. Use quoting when a variable might contain spaces or special characters.
+
+```bash
+# Without quotes, word splitting occurs on $VAR:
+for f in $FILE_LIST; do echo $f; done
+
+# With quotes, $VAR is treated as a single word:
+echo "$SOME_PATH"
+```
+
+## Glob expansion
+
+Glob patterns are expanded against the filesystem within `AllowedPaths`. If no files match, the pattern is passed through literally (standard POSIX behavior).
+
+| Pattern | Matches |
+|---|---|
+| `*` | Any sequence of characters (not including `/`) |
+| `?` | Any single character |
+| `[abc]` | Any one of the listed characters |
+| `[a-z]` | Any character in the range |
+| `[!a]` | Any character except `a` |
+
+```bash
+# Match all .log files in /data
+for f in /data/*.log; do wc -l "$f"; done
+
+# Match files starting with 'app' followed by any single character
+ls /data/app?.txt
+
+# Match files starting with a lowercase letter
+ls /data/[a-z]*.csv
+
+# Match files not starting with a dot
+ls /data/[!.]* 2>/dev/null
+```
+
+<Note>
+  Glob expansion respects the `AllowedPaths` sandbox. Patterns cannot match files outside the permitted directories, even if the pattern is crafted to include `..` components.
+</Note>
+
+## Line continuation
+
+A backslash at the end of a line (before the newline) joins the logical line. This is useful for writing long commands across multiple lines.
+
+```bash
+find /data \
+  -name "*.log" \
+  -mtime -1 \
+  | wc -l
+```
+
+```bash
+grep -E \
+  "ERROR|WARN|FATAL" \
+  /var/log/app.log \
+  | tail -n 50
+```
+
+## Comments
+
+Anything from `#` to the end of the line is a comment and is ignored.
+
+```bash
+# Count recent error log files
+find /data/logs -name "*.log" -mtime -1 | wc -l   # files modified in last day
+```
+
+Comments can appear on their own line or at the end of a command line. A `#` inside a quoted string is not a comment.
+
+## Blocked expansion forms
+
+<Warning>
+  The following expansion forms are blocked at the AST validation stage and return exit code 2 before any command executes.
+</Warning>
+
+### Extended globbing
+
+Bash extended glob patterns (`@(pat)`, `*(pat)`, `+(pat)`, `?(pat)`, `!(pat)`) are not supported.
+
+```bash
+# Blocked — exit code 2:
+ls @(*.log|*.txt)
+ls *(*.go)
+```
+
+Use standard glob patterns or `find` with `-name` expressions instead.
+
+### Tilde expansion
+
+`~`, `~/path`, and `~user` are blocked. Tilde expansion would disclose the host user's home directory path, which is a form of host information leakage.
+
+```bash
+# Blocked — exit code 2:
+echo ~
+cat ~/config
+ls ~alice
+```
+
+Use explicit absolute paths instead.
+
+### Process substitution
+
+`<(cmd)` and `>(cmd)` are blocked. Process substitution creates anonymous pipes exposed as file descriptors, which can be used to bypass the sandbox and pipe data to arbitrary file descriptors.
+
+```bash
+# Blocked — exit code 2:
+diff <(cat a.txt) <(cat b.txt)
+grep pattern <(echo "data")
+```
+
+Use a pipe or heredoc to achieve similar results:
+
+```bash
+# Alternative using heredoc:
+grep pattern <<EOF
+data
+EOF
+```
+
+## Supported vs. blocked at a glance
+
+<Tabs>
+  <Tab title="Supported">
+    ```bash
+    # Single quotes (literal)
+    echo 'no $expansion here'
+
+    # Double quotes (with expansion)
+    echo "value is $MY_VAR"
+
+    # Globbing
+    for f in /data/*.log; do cat "$f"; done
+    ls /data/[a-z]*.csv
+
+    # Line continuation
+    find /data \
+      -name "*.log" \
+      | wc -l
+
+    # Comments
+    echo hello  # this is a comment
+    ```
+  </Tab>
+  <Tab title="Blocked">
+    ```bash
+    # Extended glob — exit code 2
+    ls @(*.log|*.txt)
+    ls +(foo*)
+
+    # Tilde expansion — exit code 2
+    echo ~
+    cat ~/file.txt
+
+    # Process substitution — exit code 2
+    diff <(cat a.txt) <(cat b.txt)
+    grep pattern <(echo data)
+    ```
+  </Tab>
+</Tabs>

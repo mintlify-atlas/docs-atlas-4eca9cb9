@@ -1,0 +1,86 @@
+---
+title: "interp.New"
+description: "Create a new restricted shell Runner"
+---
+
+```go
+func New(opts ...RunnerOption) (*Runner, error)
+```
+
+`New` creates a new [`Runner`](/api/interp/runner), applies the provided options in order, and sets safe defaults for any omitted options. If any option returns an error, `New` closes any resources already acquired and returns that error.
+
+## Default behaviors
+
+When options are omitted, rshell applies the following defaults:
+
+| Concern | Default |
+|---|---|
+| Environment | Empty — no host environment variables are inherited |
+| Working directory | `os.Getwd()` |
+| Stdout / stderr | `io.Discard` — output is silently dropped |
+| Stdin | `nil` |
+| Exec handler | `noExecHandler` — all external commands blocked, returns exit 127 |
+| Open handler | Sandbox-backed — blocks all file access unless `AllowedPaths` is set |
+| Max execution time | None — runs unbounded |
+| Proc path | `/proc` (Linux only) |
+
+<Note>
+  The exec handler blocks **all** commands by default. You must explicitly allow commands via [`AllowedCommands`](/api/interp/runner-options#allowedcommands) or [`AllowAllCommands`](/api/interp/runner-options#allowallcommands).
+</Note>
+
+## Parameters
+
+<ParamField path="opts" type="...RunnerOption">
+  Zero or more functional options that configure the Runner. Options are applied in the order provided. See [RunnerOption functions](/api/interp/runner-options) for the full list.
+</ParamField>
+
+## Returns
+
+<ResponseField name="*Runner" type="*Runner">
+  A fully initialized Runner ready to call `Run`. Must be closed with `Close` when no longer needed.
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Non-nil if any option fails (for example, `AllowedPaths` with a nonexistent directory, or `MaxExecutionTime` with a negative duration). Resources are cleaned up before the error is returned.
+</ResponseField>
+
+## Usage
+
+```go
+import (
+    "context"
+    "os"
+    "strings"
+
+    "github.com/DataDog/rshell/interp"
+    "mvdan.cc/sh/v3/syntax"
+)
+
+func main() {
+    // Create a runner with stdout, one allowed command, and a path sandbox.
+    r, err := interp.New(
+        interp.StdIO(nil, os.Stdout, os.Stderr),
+        interp.AllowedCommands([]string{"rshell:echo", "rshell:ls"}),
+        interp.AllowedPaths([]string{"/tmp"}),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer r.Close()
+
+    src := `echo hello`
+    f, err := syntax.NewParser().Parse(strings.NewReader(src), "")
+    if err != nil {
+        panic(err)
+    }
+
+    if err := r.Run(context.Background(), f); err != nil {
+        panic(err)
+    }
+}
+```
+
+## See also
+
+- [Runner](/api/interp/runner) — the type returned by `New`
+- [RunnerOption functions](/api/interp/runner-options) — all available options

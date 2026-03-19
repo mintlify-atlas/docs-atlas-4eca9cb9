@@ -1,97 +1,119 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "rshell"
+description: "A restricted, sandboxed shell interpreter for Go — built for safe AI agent execution"
 ---
 
-## Setting up
-
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first sandboxed shell script in minutes
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Security Model" icon="shield-halved" href="/security/overview">
+    Understand the default-deny security architecture
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Shell Features" icon="terminal" href="/features/builtins">
+    Explore supported builtins, variables, and control flow
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/interp/new">
+    Full Go API documentation for the interp package
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is rshell?
 
-Everything you need to create world-class documentation.
+rshell is a Go library that embeds a restricted POSIX-like shell interpreter designed specifically for AI agents. Unlike a general-purpose shell, rshell is **default-deny**: every resource — commands, filesystem paths, environment variables, and output redirections — is blocked unless explicitly permitted by the caller.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+This means an AI agent running shell commands through rshell cannot:
+- Execute commands not in an explicit allowlist
+- Read or write files outside permitted directories
+- Inherit sensitive environment variables from the host process
+- Write to arbitrary files (only `/dev/null` is a valid redirect target)
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Default-deny security" icon="lock">
+    Commands, filesystem, environment, and redirections are all blocked by default. You opt in to exactly what you need.
+  </Card>
+  <Card title="Namespaced command allowlist" icon="list-check">
+    Commands require the `rshell:` namespace prefix (e.g. `rshell:cat`, `rshell:grep`) to prevent injection attacks.
+  </Card>
+  <Card title="os.Root filesystem sandboxing" icon="folder-lock">
+    File access uses Go's `os.Root` API with `openat` syscalls — immune to symlink traversal and TOCTOU race conditions.
+  </Card>
+  <Card title="20+ secure builtins" icon="wrench">
+    cat, grep, find, sed, ls, ps, ss, ping, sort, wc, and more — each with GTFOBins-resistant restrictions applied.
+  </Card>
+  <Card title="Execution timeout" icon="clock">
+    Bound total script execution time via `MaxExecutionTime` or a `context.Context` deadline.
+  </Card>
+  <Card title="Cross-platform" icon="globe">
+    Runs on Linux, macOS, and Windows with platform-appropriate behavior.
+  </Card>
+  <Card title="POSIX-compatible" icon="check-double">
+    900+ YAML-driven test scenarios validated byte-for-byte against real bash.
+  </Card>
+  <Card title="Embeddable or standalone" icon="puzzle-piece">
+    Use as a Go library or deploy the `rshell` CLI binary directly.
+  </Card>
+</CardGroup>
+
+## How it works
+
+rshell wraps the [`mvdan.cc/sh`](https://pkg.go.dev/mvdan.cc/sh/v3) shell parser and replaces the execution engine with a sandboxed runner. Each `interp.New()` call creates an isolated `Runner` with your specified security policy:
+
+```go main.go
+package main
+
+import (
+    "context"
+    "os"
+    "strings"
+    "time"
+
+    "github.com/DataDog/rshell/interp"
+    "mvdan.cc/sh/v3/syntax"
+)
+
+func main() {
+    script := `
+        files=$(find /data -name "*.log" -type f)
+        wc -l $files
+    `
+
+    prog, _ := syntax.NewParser().Parse(strings.NewReader(script), "")
+
+    runner, _ := interp.New(
+        interp.StdIO(nil, os.Stdout, os.Stderr),
+        interp.AllowedCommands([]string{"rshell:find", "rshell:wc"}),
+        interp.AllowedPaths([]string{"/data"}),
+        interp.MaxExecutionTime(30*time.Second),
+    )
+    defer runner.Close()
+
+    runner.Run(context.Background(), prog)
+}
+```
+
+## Security model at a glance
+
+Every access path is **default-deny**:
+
+| Resource | Default | How to enable |
+|---|---|---|
+| Command execution | All commands blocked (exit code 127) | `AllowedCommands([]string{"rshell:cat"})` or `AllowAllCommands()` |
+| External commands | Blocked (exit code 127) | Provide an `ExecHandler` |
+| Filesystem access | Blocked | `AllowedPaths([]string{"/my/dir"})` |
+| Environment variables | Empty — no host env inherited | `Env("KEY=value")` |
+| Output redirections | Only `/dev/null` allowed | N/A — by design |
+
+<Note>
+  rshell is designed to be used as a Go library. The `rshell` CLI binary is included for testing and scripting convenience, but the primary interface is the `interp` package.
+</Note>
+
+## Install
+
+```bash
+go get github.com/DataDog/rshell
+```
+
+Then follow the [Quickstart](/quickstart) to run your first sandboxed shell script.

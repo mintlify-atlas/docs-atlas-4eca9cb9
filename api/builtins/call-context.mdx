@@ -1,0 +1,179 @@
+---
+title: "builtins.CallContext"
+description: "The CallContext struct providing capabilities to builtin command implementations"
+---
+
+```go
+type CallContext struct { ... }
+```
+
+`CallContext` is created by the Runner for each builtin invocation. It provides the sandbox-scoped capabilities available to that command — I/O streams, filesystem operations, and shell introspection — all subject to the restrictions set by the Runner's configuration.
+
+## Fields
+
+### I/O
+
+<ResponseField name="Stdout" type="io.Writer">
+  Standard output for the builtin. Write command output here.
+</ResponseField>
+
+<ResponseField name="Stderr" type="io.Writer">
+  Standard error for the builtin. Write diagnostic messages here.
+</ResponseField>
+
+<ResponseField name="Stdin" type="io.Reader">
+  Standard input for the builtin.
+</ResponseField>
+
+### Shell state
+
+<ResponseField name="InLoop" type="bool">
+  True when the builtin is executing inside a `for` loop. Used by `break` and `continue` to validate their context.
+</ResponseField>
+
+<ResponseField name="LastExitCode" type="uint8">
+  The exit code of the most recently completed command (`$?` in shell).
+</ResponseField>
+
+<ResponseField name="Now" type="time.Time">
+  Reference time captured once at the start of `Runner.Run`. All builtins within a single `Run` call share this same timestamp.
+
+  This is an intentional trade-off for consistency: in bash, each command sees its own invocation time. In rshell, time predicates (e.g., `find -mmin`, `ls -l`) use the same reference time within one `Run`.
+
+  <Note>
+    Callers constructing `CallContext` directly in tests must set `Now` to a non-zero value before invoking builtins that use time predicates.
+  </Note>
+</ResponseField>
+
+### Filesystem operations
+
+All filesystem functions operate within the sandbox restrictions configured by [`AllowedPaths`](/api/interp/runner-options#allowedpaths). Paths outside the allowed directories return permission errors.
+
+<ResponseField name="OpenFile" type="func(ctx context.Context, path string, flags int, mode os.FileMode) (io.ReadWriteCloser, error)">
+  Opens a file within the shell's path restrictions.
+</ResponseField>
+
+<ResponseField name="ReadDir" type="func(ctx context.Context, path string) ([]fs.DirEntry, error)">
+  Reads a directory within the shell's path restrictions. Entries are returned sorted by name.
+</ResponseField>
+
+<ResponseField name="OpenDir" type="func(ctx context.Context, path string) (fs.ReadDirFile, error)">
+  Opens a directory for incremental reading via `ReadDir(n)`. The caller must close the returned handle.
+</ResponseField>
+
+<ResponseField name="IsDirEmpty" type="func(ctx context.Context, path string) (bool, error)">
+  Reports whether a directory is empty by reading at most one entry.
+</ResponseField>
+
+<ResponseField name="ReadDirLimited" type="func(ctx context.Context, path string, offset, maxRead int) ([]fs.DirEntry, bool, error)">
+  Reads up to `maxRead` directory entries, skipping the first `offset` raw entries. Returns `(entries, truncated, error)`. When `truncated` is true, more entries exist beyond the returned set.
+</ResponseField>
+
+<ResponseField name="StatFile" type="func(ctx context.Context, path string) (fs.FileInfo, error)">
+  Returns file metadata, following symbolic links.
+</ResponseField>
+
+<ResponseField name="LstatFile" type="func(ctx context.Context, path string) (fs.FileInfo, error)">
+  Returns file metadata without following symbolic links — describes the link itself.
+</ResponseField>
+
+<ResponseField name="AccessFile" type="func(ctx context.Context, path string, mode uint32) error">
+  Checks whether the file at `path` is accessible under `mode`. Mode bits: `0x04` = read, `0x02` = write, `0x01` = execute.
+</ResponseField>
+
+### File identity
+
+<ResponseField name="FileIdentity" type="func(path string, info fs.FileInfo) (FileID, bool)">
+  Extracts canonical file identity from `FileInfo` for cycle detection in recursive operations. Returns `(FileID{Dev, Ino}, true)` on success.
+
+  <Expandable title="FileID struct">
+    ```go
+    type FileID struct {
+        Dev uint64
+        Ino uint64
+    }
+    ```
+    On Unix: device number and inode. On Windows: volume serial number and file index. Used as a map key for visited-set tracking.
+  </Expandable>
+</ResponseField>
+
+### Shell policy and introspection
+
+<ResponseField name="CommandAllowed" type="func(name string) bool">
+  Reports whether a command name is permitted under the current shell policy. Used by the `help` builtin to list only executable commands.
+</ResponseField>
+
+<ResponseField name="WorkDir" type="func() string">
+  Returns the shell's current working directory as an absolute path.
+</ResponseField>
+
+<ResponseField name="RunCommand" type="func(ctx context.Context, dir string, name string, args []string) (uint8, error)">
+  Executes a builtin command within the shell's sandbox. `dir` overrides the working directory for path resolution. Returns the command's exit code.
+</ResponseField>
+
+<ResponseField name="PortableErr" type="func(err error) string">
+  Normalizes an OS error to a POSIX-style message string.
+</ResponseField>
+
+<ResponseField name="Proc" type="*ProcProvider">
+  Provides access to the proc filesystem for the `ps` builtin. The path is fixed at Runner construction time.
+</ResponseField>
+
+## Helper methods
+
+### Out
+
+```go
+func (c *CallContext) Out(s string)
+```
+
+Writes a string to `Stdout`.
+
+---
+
+### Outf
+
+```go
+func (c *CallContext) Outf(format string, a ...any)
+```
+
+Writes a formatted string to `Stdout`.
+
+---
+
+### Errf
+
+```go
+func (c *CallContext) Errf(format string, a ...any)
+```
+
+Writes a formatted string to `Stderr`.
+
+## Example
+
+```go
+func myHandler(ctx context.Context, callCtx *builtins.CallContext, args []string) builtins.Result {
+    // Print the working directory.
+    callCtx.Outf("cwd: %s\n", callCtx.WorkDir())
+
+    // Read a file within the sandbox.
+    f, err := callCtx.OpenFile(ctx, args[0], os.O_RDONLY, 0)
+    if err != nil {
+        callCtx.Errf("error: %s\n", callCtx.PortableErr(err))
+        return builtins.Result{Code: 1}
+    }
+    defer f.Close()
+
+    // List a directory.
+    entries, err := callCtx.ReadDir(ctx, "/data")
+    if err != nil {
+        callCtx.Errf("readdir: %v\n", err)
+        return builtins.Result{Code: 1}
+    }
+    for _, e := range entries {
+        callCtx.Outf("%s\n", e.Name())
+    }
+
+    return builtins.Result{}
+}
+```

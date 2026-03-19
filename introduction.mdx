@@ -1,0 +1,132 @@
+---
+title: "Introduction"
+description: "What rshell is, why it exists, and how it keeps AI agent shell execution safe by default."
+---
+
+## What is rshell?
+
+rshell is a Go library that embeds a restricted POSIX-like shell interpreter designed specifically for AI agents. It lets you give an AI agent the ability to run shell commands — safely — by enforcing a strict default-deny policy on every resource the shell can touch.
+
+AI agents often need to run shell commands to read files, inspect processes, search logs, or interact with the filesystem. General-purpose shells like bash are not safe to hand to an agent directly: they can read arbitrary files, execute any binary, inherit sensitive environment variables, and write to any path the process can access. rshell solves this by inverting the default: **everything is blocked unless you explicitly permit it**.
+
+An agent running shell commands through rshell cannot:
+
+- Execute commands that are not in your allowlist
+- Read or write files outside directories you specify
+- Inherit environment variables from the host process
+- Write to arbitrary files (only `/dev/null` is a permitted redirect target)
+- Run background jobs, coprocesses, or arbitrary external binaries
+
+## How it works
+
+rshell wraps the [`mvdan.cc/sh`](https://pkg.go.dev/mvdan.cc/sh/v3) shell parser and replaces the execution engine with a sandboxed `Runner`. You parse a shell script with the `mvdan.cc/sh/v3/syntax` parser, then pass the AST to `runner.Run()`. Before any node executes, rshell's validator walks the AST and rejects blocked constructs (arithmetic expansion, background jobs, write redirections to non-`/dev/null` paths, etc.) at exit code 2 — before a single command runs.
+
+Command execution goes through the `allowedCommands` check. Filesystem operations go through Go's `os.Root` API, which uses `openat` syscalls to confine every open to the permitted directory tree — immune to symlink traversal, TOCTOU races, and `..` escape attacks.
+
+```go
+runner, _ := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{"rshell:find", "rshell:wc"}),
+    interp.AllowedPaths([]string{"/data"}),
+    interp.MaxExecutionTime(30*time.Second),
+)
+defer runner.Close()
+
+runner.Run(context.Background(), prog)
+```
+
+## Core concepts
+
+### AllowedCommands
+
+`AllowedCommands` restricts which commands the interpreter may execute. Command names must use the `rshell:` namespace prefix (e.g. `rshell:cat`, `rshell:grep`). The prefix is required intentionally — it prevents prompt-injection attacks where an agent's input contains a command name that looks like a system binary.
+
+When `AllowedCommands` is not set, no commands are allowed at all. Any attempt to run a command returns exit code 127 with `<cmd>: command not allowed`.
+
+```go
+interp.AllowedCommands([]string{"rshell:echo", "rshell:cat", "rshell:grep"})
+```
+
+For testing and development convenience, `AllowAllCommands()` bypasses the allowlist entirely.
+
+### AllowedPaths
+
+`AllowedPaths` restricts all file and directory access to the specified absolute paths. Under the hood it uses Go's `os.Root` API, which opens a directory file descriptor and performs all subsequent opens relative to it with `openat`. This means:
+
+- Symlink traversal out of the directory is impossible at the kernel level
+- `../` escape attempts are blocked
+- TOCTOU races (check-then-open) cannot subvert the restriction
+
+When `AllowedPaths` is not set (the default), all file access is blocked. An empty slice also blocks all file access.
+
+```go
+interp.AllowedPaths([]string{"/data/logs", "/tmp/agent-workspace"})
+```
+
+### ExecHandler
+
+By default, rshell blocks all external commands (binaries not implemented as builtins). To allow external execution, provide an `ExecHandler` — a function called for every command that is not a builtin. You can use this to run external commands in a subprocess, proxy them to a container, or implement custom logic.
+
+External commands also need to be listed in `AllowedCommands` and their binary must be within `AllowedPaths`.
+
+### MaxExecutionTime
+
+`MaxExecutionTime` bounds the total execution time of each `runner.Run()` call. When the deadline is exceeded, the runner's context is cancelled and `Run` returns an error wrapping `context.DeadlineExceeded`. The timeout resets on each `Run` call, so reusing a runner gives each run a fresh deadline.
+
+```go
+interp.MaxExecutionTime(5 * time.Second)
+```
+
+You can also pass a context with a deadline directly to `runner.Run()` if you prefer to manage timeouts at the call site.
+
+## Security guarantees
+
+Every access path in rshell is default-deny:
+
+| Resource | Default | How to enable |
+|---|---|---|
+| Command execution | Blocked — exit code 127 | `AllowedCommands([]string{"rshell:cat"})` or `AllowAllCommands()` |
+| External commands | Blocked — exit code 127 | Provide an `ExecHandler` |
+| Filesystem access | Blocked | `AllowedPaths([]string{"/my/dir"})` |
+| Environment variables | Empty — no host env inherited | `Env("KEY=value")` |
+| Output redirections | Only `/dev/null` allowed | Not configurable — by design |
+
+<Warning>
+  `AllowAllCommands()` bypasses the command allowlist entirely. Use it only in test environments, never in production code that runs agent-generated scripts.
+</Warning>
+
+The AST validator runs before execution and rejects blocked shell constructs at exit code 2:
+
+- Arithmetic expansion (`$(( expr ))`)
+- Background execution (`cmd &`)
+- Write redirections to any path other than `/dev/null`
+- `while`/`until` loops, `case`, `select`, functions
+- Positional parameters (`$1`, `$@`, `$*`), `$!`, `$LINENO`
+- Append assignment (`VAR+=value`), arrays, parameter expansion operations
+
+The environment starts completely empty. No host environment variables are inherited unless you explicitly pass them via the `Env` option.
+
+## Platform support
+
+rshell runs on Linux, macOS, and Windows. Platform-specific behavior:
+
+- **Linux**: Full feature set including the `ps` builtin (reads `/proc`) and the `ss` builtin (reads `/proc/net/`). The `ProcPath` option overrides the proc root for container environments.
+- **macOS**: Full feature set. `ss` reads socket state via sysctl. `ps` is not available.
+- **Windows**: Full feature set. `ss` reads socket state via `iphlpapi.dll`. Path handling uses Windows conventions.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first sandboxed shell script in under 5 minutes.
+  </Card>
+  <Card title="Security model" icon="shield-halved" href="/security/overview">
+    Deep dive into the default-deny architecture and each restriction layer.
+  </Card>
+  <Card title="Shell features" icon="terminal" href="/features/builtins">
+    Browse all supported builtins, variables, control flow, and what is blocked.
+  </Card>
+  <Card title="API reference" icon="code" href="/api/interp/new">
+    Full Go API documentation for the `interp` package.
+  </Card>
+</CardGroup>

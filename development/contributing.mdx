@@ -1,0 +1,112 @@
+---
+title: "Contributing"
+description: "How to contribute to rshell"
+---
+
+Thanks for your interest in contributing to rshell!
+
+## Submitting Issues
+
+Use the [GitHub issue tracker](https://github.com/DataDog/rshell/issues) to
+report bugs or request features. Before opening a new issue, search existing
+issues to avoid duplicates.
+
+## Pull Requests
+
+<Steps>
+  <Step title="Fork and branch">
+    Fork the repository and create a topic branch from `main`.
+  </Step>
+  <Step title="Make your changes">
+    Add tests for any new functionality. Keep pull requests focused on a single
+    change to make review easier.
+  </Step>
+  <Step title="Format code">
+    Always run `make fmt` after making any edits. This is a mandatory step — CI
+    rejects unformatted code.
+
+    ```bash
+    make fmt
+    ```
+
+    Verify that all files are clean:
+
+    ```bash
+    gofmt -l .
+    ```
+
+    No output means everything is formatted correctly.
+  </Step>
+  <Step title="Run tests">
+    ```bash
+    go test ./...
+    ```
+
+    If your change touches `tests/scenarios/` or any builtin implementation, also
+    run the bash comparison tests (requires Docker):
+
+    ```bash
+    RSHELL_BASH_TEST=1 go test ./tests/ -run TestShellScenariosAgainstBash -timeout 120s
+    ```
+  </Step>
+  <Step title="Open a draft pull request">
+    Push your branch and open the PR in **draft mode** against `main`. Only mark
+    it ready for review once all CI checks pass and the work is complete.
+
+    ```bash
+    gh pr create --draft
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Never add the `verified/allowed_symbols` GitHub label. This label is reserved
+  for human manual approval only.
+</Warning>
+
+## Code Style
+
+- Follow standard Go conventions (`gofmt`, `go vet`).
+- Run `make fmt` after every change — no exceptions.
+- Write tests for new functionality and bug fixes.
+- Keep changes minimal and focused.
+
+## Bash Compatibility Principle
+
+rshell aims for byte-for-byte output parity with bash for all non-sandboxed
+behavior.
+
+<Warning>
+  Always fix the shell implementation to match bash behavior. Never update a
+  test's expected output to match incorrect shell behavior — fix the shell
+  instead.
+
+  The only acceptable divergences from bash are intentional sandbox restrictions
+  (blocked commands, readonly enforcement, restricted redirects).
+</Warning>
+
+## Adding a New Builtin
+
+<Steps>
+  <Step title="Implement the command">
+    Create the builtin under `builtins/` following the existing patterns. Set
+    the `Description` field on the `builtins.Command` struct.
+  </Step>
+  <Step title="Register it">
+    Register the new builtin so it appears in `help` output and can be enabled
+    via `--allowed-commands rshell:<name>`.
+  </Step>
+  <Step title="Write scenario tests">
+    Add YAML scenario files under `tests/scenarios/cmd/<name>/`. Prefer scenario
+    tests over Go tests — see the [Testing](/development/testing) page.
+  </Step>
+  <Step title="Update documentation">
+    Update `SHELL_FEATURES.md` and verify the command appears correctly in `help`
+    output.
+  </Step>
+</Steps>
+
+## License
+
+By contributing to this project you agree that your contributions will be
+licensed under the [Apache License 2.0](https://github.com/DataDog/rshell/blob/main/LICENSE).

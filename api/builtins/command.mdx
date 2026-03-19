@@ -1,0 +1,206 @@
+---
+title: "builtins.Command"
+description: "The Command struct and registration system for rshell builtins"
+---
+
+## Types
+
+### Command
+
+```go
+type Command struct {
+    Name        string
+    Description string
+    Help        string
+    MakeFlags   func(*FlagSet) HandlerFunc
+}
+```
+
+`Command` pairs a builtin name with its flag-declaring factory. `MakeFlags` receives a fresh `*FlagSet` on each invocation, registers any flags, and returns the bound `HandlerFunc` that runs after flag parsing.
+
+<ResponseField name="Name" type="string">
+  The command name as invoked from a shell script (e.g., `"echo"`, `"ls"`).
+</ResponseField>
+
+<ResponseField name="Description" type="string">
+  One-line description shown in `help` output.
+</ResponseField>
+
+<ResponseField name="Help" type="string">
+  Full help text shown by `help <command>`.
+</ResponseField>
+
+<ResponseField name="MakeFlags" type="func(*FlagSet) HandlerFunc">
+  Factory called once per invocation with a fresh `*FlagSet`. Register flags on the set, then return the handler that will be called with parsed positional arguments. Use `NoFlags` for commands that accept no flags.
+</ResponseField>
+
+---
+
+### HandlerFunc
+
+```go
+type HandlerFunc func(ctx context.Context, callCtx *CallContext, args []string) Result
+```
+
+The bound handler called by the framework after flag parsing. `args` contains only the positional (non-flag) arguments.
+
+---
+
+### FlagSet and Flag
+
+```go
+type FlagSet = pflag.FlagSet
+type Flag = pflag.Flag
+```
+
+Type aliases for `pflag.FlagSet` and `pflag.Flag`. Command implementations receive a `*FlagSet` without needing to import `pflag` directly.
+
+---
+
+### Result
+
+```go
+type Result struct {
+    Code      uint8
+    Exiting   bool
+    BreakN    int
+    ContinueN int
+}
+```
+
+`Result` captures the outcome of executing a builtin command.
+
+<ResponseField name="Code" type="uint8">
+  Exit status code. `0` means success.
+</ResponseField>
+
+<ResponseField name="Exiting" type="bool">
+  When true, signals that the shell should exit. Set by the `exit` builtin.
+</ResponseField>
+
+<ResponseField name="BreakN" type="int">
+  When greater than 0, break out of `N` enclosing loops.
+</ResponseField>
+
+<ResponseField name="ContinueN" type="int">
+  When greater than 0, continue from `N` enclosing loops.
+</ResponseField>
+
+---
+
+### CommandMeta
+
+```go
+type CommandMeta struct {
+    Name        string
+    Description string
+    Help        string
+}
+```
+
+Holds the metadata registered for a builtin. Returned by `Meta`.
+
+## Methods
+
+### Command.Register
+
+```go
+func (c Command) Register()
+```
+
+Adds the `Command` to the global builtin registry. On each invocation the framework:
+
+1. Creates a fresh `*FlagSet`.
+2. Passes it to `c.MakeFlags` to register flags and obtain the bound `HandlerFunc`.
+3. Parses raw arguments.
+4. Calls the handler with positional-only arguments.
+
+If `MakeFlags` registers no flags (e.g., via `NoFlags`), flag parsing is skipped entirely and all raw arguments are passed to the handler unchanged. This lets commands like `echo` treat flag-shaped literals (e.g., `-n`) correctly.
+
+<Warning>
+  Registering the same command name twice panics with `"builtin already registered: <name>"`.
+</Warning>
+
+## Helper functions
+
+### NoFlags
+
+```go
+func NoFlags(fn HandlerFunc) func(*FlagSet) HandlerFunc
+```
+
+Wraps a `HandlerFunc` in the `MakeFlags` format for commands that declare no flags. The framework skips flag parsing entirely and passes all arguments to the handler unchanged.
+
+```go
+cmd := builtins.Command{
+    Name:        "echo",
+    Description: "Write arguments to stdout",
+    MakeFlags:   builtins.NoFlags(echoHandler),
+}
+cmd.Register()
+```
+
+## Registry functions
+
+### Lookup
+
+```go
+func Lookup(name string) (HandlerFunc, bool)
+```
+
+Returns the handler for a registered builtin, or `(nil, false)` if not found.
+
+---
+
+### Names
+
+```go
+func Names() []string
+```
+
+Returns a sorted list of all registered builtin command names.
+
+---
+
+### Meta
+
+```go
+func Meta(name string) (CommandMeta, bool)
+```
+
+Returns the `CommandMeta` for a registered builtin, or `(CommandMeta{}, false)` if not found.
+
+## Example: registering a builtin
+
+```go
+package mybuiltin
+
+import (
+    "context"
+
+    "github.com/DataDog/rshell/builtins"
+)
+
+func init() {
+    builtins.Command{
+        Name:        "greet",
+        Description: "Print a greeting",
+        Help:        "Usage: greet [name]\n\nPrints a greeting to stdout.",
+        MakeFlags: func(fs *builtins.FlagSet) builtins.HandlerFunc {
+            loud := fs.Bool("loud", false, "uppercase output")
+            return func(ctx context.Context, callCtx *builtins.CallContext, args []string) builtins.Result {
+                name := "world"
+                if len(args) > 0 {
+                    name = args[0]
+                }
+                msg := "hello, " + name
+                if *loud {
+                    msg = strings.ToUpper(msg)
+                }
+                callCtx.Out(msg + "\n")
+                return builtins.Result{}
+            }
+        },
+    }.Register()
+}
+```

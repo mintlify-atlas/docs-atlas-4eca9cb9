@@ -1,0 +1,168 @@
+---
+title: "Testing"
+description: "How rshell tests work: YAML scenarios, bash comparison, and Go tests"
+---
+
+## Overview
+
+rshell has **900+ YAML-driven scenario files** that cover builtins, shell
+features, and security restrictions. By default every scenario runs twice —
+once in rshell and once in a real bash shell — so output parity is continuously
+verified.
+
+## Test Architecture
+
+```
+tests/scenarios/
+├── cmd/          # builtin command tests (echo, cat, grep, head, tail, test, uniq, wc, ...)
+└── shell/        # shell feature tests (pipes, variables, control flow, ...)
+```
+
+Each file in these directories is a standalone scenario. The test runner
+executes every scenario in rshell and — unless explicitly opted out — also
+executes it in a real bash process and compares output byte-for-byte.
+
+## Scenario File Structure
+
+Scenario files are YAML with two top-level sections: `input` (the script and
+any runtime options) and `expect` (the expected outputs and exit code).
+
+```yaml
+description: Echo with quoted strings preserving spaces.
+input:
+  script: |
+    echo 1 22 '3  3' "4  4"
+expect:
+  stdout: |
+    1 22 3  3 4  4
+  stderr: ""
+  exit_code: 0
+```
+
+### Common fields
+
+| Field | Description |
+|-------|-------------|
+| `description` | Human-readable summary of what the scenario tests |
+| `input.script` | The shell script to execute |
+| `input.allowed_paths` | Directories to grant filesystem access to (maps to `--allowed-paths`) |
+| `expect.stdout` | Expected standard output (exact match) |
+| `expect.stderr` | Expected standard error (exact match) |
+| `expect.stderr_contains` | List of substrings that must appear in stderr |
+| `expect.exit_code` | Expected process exit code |
+| `skip_assert_against_bash` | Set to `true` to skip the bash comparison for intentional divergences |
+| `stdout_windows` | Overrides `stdout` on Windows (e.g. for path separator differences) |
+| `stderr_windows` | Overrides `stderr` on Windows |
+
+### Opting out of bash comparison
+
+Set `skip_assert_against_bash: true` only when the behavior intentionally
+diverges from bash — for example, when testing blocked commands, restricted
+redirects, or readonly enforcement:
+
+```yaml
+# skip: rshell builtin error/output format differs from GNU coreutils
+skip_assert_against_bash: true
+description: Cat on a directory fails with "is a directory" error.
+input:
+  allowed_paths: ["$DIR"]
+  script: |
+    cat mydir
+expect:
+  stderr_contains:
+    - "cat: mydir:"
+    - "is a directory"
+  exit_code: 1
+```
+
+<Warning>
+  Never set `skip_assert_against_bash: true` to paper over a bug. If the scenario
+  fails because rshell output differs from bash, fix the shell implementation,
+  not the test.
+</Warning>
+
+### Windows-specific overrides
+
+When expected output differs on Windows (e.g. due to path separators), use the
+`_windows` suffix fields. If a Windows field is not set, the non-Windows field
+is used as a fallback.
+
+```yaml
+expect:
+  stdout: |+
+    dir/a.txt
+  stdout_windows: ""
+  stderr: ""
+  exit_code: 0
+```
+
+## Running Tests
+
+### All tests
+
+```bash
+go test ./...
+```
+
+Or with the Makefile (runs with `-race`):
+
+```bash
+make test
+```
+
+### Bash comparison tests
+
+Bash comparison requires Docker (`debian:bookworm-slim` with GNU bash and GNU
+coreutils). The comparison is skipped by default and must be opted in:
+
+```bash
+RSHELL_BASH_TEST=1 go test ./tests/ -run TestShellScenariosAgainstBash -timeout 120s
+```
+
+Or run both suites in parallel with:
+
+```bash
+make test_all
+```
+
+## Scenario Tests vs. Go Tests
+
+**Prefer scenario tests** for anything that can be expressed as a shell script
+with expected output. Scenario tests are:
+
+- Declarative and easy to review
+- Automatically validated against bash
+- Straightforward to add without writing Go code
+
+Only write Go tests when scenario tests cannot express the required behavior,
+for example:
+
+- Testing Go APIs directly (e.g. `interp.New` option combinations)
+- Complex programmatic assertions that cannot be captured in stdout/stderr
+- Edge cases that require manipulating the test environment from Go
+
+<Tip>
+  In test scenarios, prefer `expect.stderr` (exact match) over
+  `stderr_contains` when the full stderr output is known and stable.
+</Tip>
+
+## Fuzz Testing
+
+rshell includes fuzz tests for the core builtins and the interpreter. The CI
+fuzz workflow (`.github/workflows/fuzz.yml`) runs on every push and pull
+request to `main`.
+
+Fuzzed packages include: `head`, `cat`, `wc`, `tail`, `grep`, `cut`, `echo`,
+`uniq`, `strings_cmd`, `testcmd`, `ls`, `ip`, `ss`, `ping`, `ps`, and the
+interpreter itself.
+
+Two modes are run in CI:
+
+- **Seed corpus** — fuzz functions are run as normal Go tests against the
+  saved corpus (fast, deterministic).
+- **Short-duration fuzzing** — each fuzz target runs for 30 seconds to discover
+  new inputs.
+
+For select builtins (`head`, `cat`, `wc`, `tail`), a **differential fuzz**
+mode compares rshell output against the real GNU coreutils binary running
+inside Docker (`RSHELL_BASH_TEST=1`).

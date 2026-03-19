@@ -1,0 +1,166 @@
+---
+title: "Environment variables"
+description: "How rshell starts with an empty environment by default, preventing the host process's secrets from leaking into agent-executed scripts."
+---
+
+rshell starts every runner with a completely empty environment. No variables from the host process are inherited unless you explicitly pass them via the `Env` option.
+
+## Why this matters for AI agents
+
+Host processes typically carry sensitive values in their environment: API keys, authentication tokens, database credentials, cloud provider secrets. A general-purpose shell inherits all of these automatically.
+
+If an AI agent can execute shell commands and the shell inherits the host environment, the agent can exfiltrate secrets with a single command:
+
+```bash
+# In a standard shell, this prints API_KEY and other secrets:
+printenv
+echo $OPENAI_API_KEY
+```
+
+rshell prevents this by starting with an empty environment. An agent-executed script has no access to `$OPENAI_API_KEY`, `$AWS_SECRET_ACCESS_KEY`, or any other host variable unless the Go caller explicitly provides them.
+
+## Default behavior
+
+When `Env` is not passed to `interp.New`, the interpreter uses an empty environment:
+
+```go
+// From interp/api.go:
+if r.Env == nil {
+    r.Env = expand.ListEnviron() // empty
+}
+```
+
+Three variables are set automatically at reset time, regardless of what `Env` provides:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `IFS` | `" \t\n"` | Standard field splitting (space, tab, newline). Scripts may change this. |
+| `PWD` | Working directory | Set to the runner's configured working directory. |
+| `OPTIND` | `"1"` | Resets `getopts` state at the start of each run. |
+
+These are the only variables available to a script that does not use the `Env` option.
+
+## Passing variables with `Env`
+
+Use the `Env` option to pass specific variables into the interpreter:
+
+```go
+func Env(pairs ...string) RunnerOption
+```
+
+Each `pair` must be in `"KEY=value"` format:
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{"rshell:echo", "rshell:grep"}),
+    interp.Env(
+        "WORKSPACE=/data/agent",
+        "LOG_LEVEL=info",
+        "MAX_RESULTS=100",
+    ),
+)
+```
+
+The agent script can then read these variables normally:
+
+```bash
+echo $WORKSPACE
+grep -r $LOG_LEVEL /data/logs
+```
+
+<Warning>
+  Only pass variables the script actually needs. Do not pass `os.Environ()` — that would re-expose the entire host environment and defeat the isolation entirely.
+</Warning>
+
+## `$?` — the only supported special variable
+
+Of all the special shell variables (`$?`, `$!`, `$0`, `$#`, `$@`, `$*`, `$1`–`$9`), only `$?` (the last exit status) is supported. All others are blocked by the AST validator.
+
+Blocked special variables:
+
+| Variable | Meaning | Why blocked |
+|---|---|---|
+| `$0` | Shell or script name | Could disclose host process information |
+| `$1`–`$9` | Positional parameters | Blocked — parameter passing is not supported |
+| `$#` | Number of positional parameters | No positional params, so this would always be `0` |
+| `$@`, `$*` | All positional parameters | Blocked — parameter passing is not supported |
+| `$!` | PID of last background job | Background execution is blocked |
+| `$LINENO` | Current line number | Not implemented |
+
+Using any of these in a script causes the AST validator to reject the script with exit code 2 before execution.
+
+## Blocked variable operations
+
+The following constructs for declaring or modifying variable scope are blocked by the AST validator:
+
+| Construct | Error message |
+|---|---|
+| `export VAR=value` | `export is not supported` |
+| `readonly VAR=value` | `readonly is not supported` |
+| `local VAR=value` | `local is not supported` |
+| `declare VAR=value` | `declare is not supported` |
+| `let VAR=expr` | `let is not supported` |
+| `VAR+=value` | `+= is not supported` |
+| `VAR=(a b c)` | `array assignment is not supported` |
+
+Simple variable assignment (`VAR=value`) is allowed. The value persists for the duration of the current `Run` call. If you call `runner.Run` again without calling `runner.Reset`, the variable remains set. Call `runner.Reset()` to restore the initial environment.
+
+## Blocked parameter expansion operations
+
+Dynamic parameter expansion forms that could be used to manipulate or inspect variables in unexpected ways are blocked:
+
+| Expansion | Meaning | Blocked |
+|---|---|---|
+| `${#var}` | Length of variable | Yes |
+| `${var:offset}` | Substring | Yes |
+| `${var/pat/repl}` | Pattern replacement | Yes |
+| `${!var}` | Indirect expansion | Yes |
+| `${var:-default}` | Default value | Yes |
+| `${!prefix*}` | Variable name listing | Yes |
+
+Only plain `$VAR` and `${VAR}` are supported.
+
+## IFS and field splitting
+
+`IFS` (Internal Field Separator) is set to `" \t\n"` by default and may be changed by scripts:
+
+```bash
+# A script can change IFS
+IFS=/
+path_parts=$SOME_PATH
+```
+
+Callers that provide a custom `ExecHandler` should be aware that a script can set `IFS` to a non-whitespace value to manipulate how unquoted variable expansions are split before being passed to executed commands. The default `noExecHandler` blocks all external execution, limiting the practical impact of this vector in the default configuration.
+
+## Example: scoped variables for a task
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{
+        "rshell:find",
+        "rshell:grep",
+        "rshell:wc",
+    }),
+    interp.AllowedPaths([]string{"/data/logs"}),
+    interp.Env(
+        "LOG_DIR=/data/logs",
+        "PATTERN=ERROR",
+    ),
+)
+if err != nil {
+    return err
+}
+defer runner.Close()
+
+script := `
+result=$(grep -r $PATTERN $LOG_DIR | wc -l)
+echo "Found $result matching lines"
+`
+
+prog, _ := syntax.NewParser().Parse(strings.NewReader(script), "")
+runner.Run(context.Background(), prog)
+```
+
+The agent script can use `$LOG_DIR` and `$PATTERN`, but has no access to any other variable from the host environment.

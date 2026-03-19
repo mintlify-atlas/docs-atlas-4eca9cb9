@@ -1,0 +1,109 @@
+---
+title: "CLI Usage"
+description: "Reference for the rshell command-line interface"
+---
+
+## Install
+
+```bash
+go install github.com/DataDog/rshell/cmd/rshell@latest
+```
+
+## Synopsis
+
+```
+rshell [flags] [file ...]
+```
+
+## Flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `-c <command>` | | | Shell command string to execute |
+| `--allowed-paths` | `-p` | | Comma-separated list of directories the shell is allowed to access |
+| `--allowed-commands` | | | Comma-separated list of namespaced commands (e.g. `rshell:cat,rshell:find`) |
+| `--allow-all-commands` | | `false` | Allow execution of all commands (builtins and external) |
+| `--timeout` | | `0` (no limit) | Maximum execution time for the entire shell run (e.g. `100ms`, `5s`, `1m`) |
+| `--proc-path` | | `/proc` | Path to the proc filesystem used by the `ps` builtin |
+
+<Note>
+  The `--command` long form is intentionally rejected. Only the `-c` shorthand is
+  accepted, following the bash convention. Passing `--command` results in an
+  "unknown flag" error.
+</Note>
+
+## Usage Modes
+
+<Tabs>
+  <Tab title="Inline command">
+    Use `-c` to pass a shell command string directly on the command line:
+
+    ```bash
+    rshell -c 'echo hello'
+    ```
+  </Tab>
+  <Tab title="Script file">
+    Pass one or more script file paths as positional arguments:
+
+    ```bash
+    rshell script.sh
+    ```
+
+    Multiple files are executed in order:
+
+    ```bash
+    rshell setup.sh main.sh
+    ```
+  </Tab>
+  <Tab title="Stdin">
+    When no `-c` flag and no file arguments are given, rshell reads the script
+    from stdin:
+
+    ```bash
+    echo 'echo hello' | rshell
+    ```
+  </Tab>
+</Tabs>
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | General error |
+| `2` | Syntax/parse error or blocked feature (e.g. disallowed redirect target) |
+| `124` | Timeout (`--timeout` exceeded) or execution cancelled |
+| `127` | Command not allowed (blocked by the security policy) |
+
+## Examples
+
+### Read-only log analysis
+
+Allow only `cat`, `grep`, and `wc` builtins and restrict filesystem access to
+`/var/log`:
+
+```bash
+rshell \
+  --allowed-commands rshell:cat,rshell:grep,rshell:wc \
+  --allowed-paths /var/log \
+  -c 'grep -c ERROR /var/log/app.log'
+```
+
+### Run with a timeout
+
+Limit total execution time to five seconds:
+
+```bash
+rshell --allow-all-commands --timeout 5s -c 'echo "hello from rshell"'
+```
+
+### Multiple allowed directories
+
+Grant access to more than one directory by providing a comma-separated list:
+
+```bash
+rshell \
+  --allowed-commands rshell:cat,rshell:find \
+  --allowed-paths /data/input,/data/output \
+  script.sh
+```

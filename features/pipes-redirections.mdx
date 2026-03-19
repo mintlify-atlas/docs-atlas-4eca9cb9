@@ -1,0 +1,161 @@
+---
+title: "Pipes and redirections"
+description: "Supported pipe and redirection forms in rshell, what is blocked, and why file writes are intentionally prevented."
+---
+
+rshell supports pipes and a restricted set of redirections. All output redirections to real files are blocked — the only permitted redirect target is `/dev/null`. This is a deliberate safety constraint designed to prevent AI agents from writing or exfiltrating data via shell redirection.
+
+## Why file writes are blocked
+
+A general-purpose shell lets any command write its output to an arbitrary file with `>`. For an AI agent, this creates two risks:
+
+1. **Data exfiltration**: An agent influenced by malicious input could redirect command output (process listings, file contents, network state) to a file that gets sent elsewhere.
+2. **Filesystem modification**: Writing to files outside the intended workspace could corrupt state or create backdoors.
+
+rshell blocks all output redirections to non-`/dev/null` targets at the AST validation stage — before any command executes — and returns exit code 2. The target must be a static literal; variable-expanded paths like `> $OUTFILE` are also rejected.
+
+## Supported redirections
+
+### Pipes
+
+```bash
+cmd1 | cmd2
+```
+
+Pipes the stdout of `cmd1` to the stdin of `cmd2`. Standard pipeline composition.
+
+```bash
+grep ERROR /var/log/app.log | wc -l
+ps -ef | grep python | head -n 20
+find /data -name "*.log" | sort | tail -n 5
+```
+
+### Input redirection
+
+```bash
+cmd < file
+```
+
+Reads stdin from a file. The file must be within `AllowedPaths`.
+
+```bash
+grep ERROR < /var/log/app.log
+wc -l < /data/file.txt
+```
+
+### Heredoc
+
+```bash
+cmd <<DELIM
+  content line 1
+  content line 2
+DELIM
+```
+
+Provides a multi-line string as stdin. Variable expansion and backslash processing are applied unless the delimiter is quoted.
+
+Use `<<-DELIM` to strip leading tab characters from the heredoc body:
+
+```bash
+grep -F <<-DELIM /data/file.txt
+	term1
+	term2
+DELIM
+```
+
+Quote the delimiter to suppress all expansion:
+
+```bash
+cat <<'EOF'
+$LITERAL is not expanded here
+EOF
+```
+
+**Limits:** Heredoc content is capped at 10 MiB. Larger heredocs are rejected.
+
+### Discard stdout or stderr
+
+Redirect output to `/dev/null` to discard it:
+
+```bash
+cmd > /dev/null          # discard stdout
+cmd 2> /dev/null         # discard stderr
+cmd &> /dev/null         # discard both stdout and stderr
+cmd >> /dev/null         # append to /dev/null (same effect as discard)
+cmd &>> /dev/null        # append both to /dev/null
+```
+
+### File descriptor duplication
+
+Duplicate one file descriptor to another:
+
+```bash
+cmd 2>&1     # redirect stderr to stdout (merge into one stream)
+cmd >&2      # redirect stdout to stderr
+```
+
+Combine with `/dev/null` to discard stderr while keeping stdout:
+
+```bash
+cmd 2>/dev/null
+```
+
+Or capture both streams in a pipeline:
+
+```bash
+cmd 2>&1 | grep ERROR
+```
+
+## Blocked redirections
+
+<Warning>
+  All blocked redirections return exit code 2 from the AST validator before any command executes.
+</Warning>
+
+| Syntax | Why blocked |
+|---|---|
+| `> FILE` | Writes to a file — data exfiltration risk |
+| `>> FILE` | Appends to a file — data exfiltration risk |
+| `&> FILE` | Writes stdout+stderr to a file |
+| `&>> FILE` | Appends stdout+stderr to a file |
+| `\|&` | Pipes stdout and stderr (bash extension) |
+| `<<<` | Herestring (bash extension, not needed — use heredoc) |
+| `<>` | Read-write open — not supported |
+| `<&N` | Input file descriptor duplication |
+
+Note: `>/dev/null`, `>>/dev/null`, and `&>/dev/null` are permitted — they are the one exception to the file write block because they write nothing.
+
+## Common patterns
+
+### Discard all output
+
+```bash
+cmd &> /dev/null
+```
+
+### Merge stderr into stdout for a pipeline
+
+```bash
+cmd 2>&1 | grep -i error
+```
+
+### Suppress error messages from a command
+
+```bash
+find /data -name "*.log" 2>/dev/null
+```
+
+### Run a command, discard stdout, keep stderr visible
+
+```bash
+cmd > /dev/null
+```
+
+### Pipe from a heredoc
+
+```bash
+grep -F <<EOF
+error
+warn
+EOF
+```

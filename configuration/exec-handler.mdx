@@ -1,0 +1,172 @@
+---
+title: "Exec handler"
+description: "Configure a custom ExecHandlerFunc to intercept and control external command execution."
+---
+
+When rshell encounters a non-builtin command in a script, it calls the configured `ExecHandlerFunc`. By default, no handler is set and all external commands return exit code 127 with the message `<cmd>: command not found`.
+
+A custom `ExecHandler` lets you:
+
+- Run external binaries within `AllowedPaths`
+- Implement virtual commands backed by Go code
+- Intercept, log, or sandbox external execution
+- Gate execution on additional runtime conditions
+
+## Type signatures
+
+### ExecHandlerFunc
+
+```go
+type ExecHandlerFunc func(ctx context.Context, args []string) error
+```
+
+Called for every `syntax.CallExpr` node where the first argument is not a recognized builtin. `args[0]` is the command name; the remaining elements are arguments.
+
+**Return values:**
+
+- `nil` — exit status 0.
+- `interp.ExitStatus(n)` (or a wrapped value) — exit status `n`, returned via the API if it is the last statement.
+- Any other non-nil error — halts the runner and is returned as a fatal error from `Run`.
+
+### HandlerContext
+
+```go
+type HandlerContext struct {
+    Env    expand.Environ
+    Dir    string
+    Pos    syntax.Pos
+    Stdin  io.Reader
+    Stdout io.Writer
+    Stderr io.Writer
+}
+```
+
+The interpreter passes `HandlerContext` via `context.WithValue` using a private key. Retrieve it with:
+
+```go
+hc := interp.HandlerCtx(ctx)
+```
+
+`HandlerCtx` panics if called with a context that did not originate from the interpreter — this is a programming error.
+
+<ParamField path="Env" type="expand.Environ">
+  Read-only view of the interpreter's current environment, including both environment and shell variables.
+</ParamField>
+
+<ParamField path="Dir" type="string">
+  The interpreter's current working directory as an absolute path.
+</ParamField>
+
+<ParamField path="Pos" type="syntax.Pos">
+  Source position of the call expression. May be invalid if position information is not available.
+</ParamField>
+
+<ParamField path="Stdin" type="io.Reader">
+  The interpreter's current standard input. Always an `*os.File` at runtime, typed as `io.Reader` for interface stability.
+</ParamField>
+
+<ParamField path="Stdout" type="io.Writer">
+  The interpreter's current standard output.
+</ParamField>
+
+<ParamField path="Stderr" type="io.Writer">
+  The interpreter's current standard error.
+</ParamField>
+
+## Default behavior
+
+When no custom `ExecHandler` is provided, rshell installs `noExecHandler` internally:
+
+```go
+// Default handler: rejects all external commands.
+func(ctx context.Context, args []string) error {
+    hc := interp.HandlerCtx(ctx)
+    fmt.Fprintf(hc.Stderr, "%s: command not found\n", args[0])
+    return interp.ExitStatus(127)
+}
+```
+
+This ensures external execution is blocked by default — consistent with rshell's default-deny model.
+
+## ExecHandler availability
+
+`ExecHandlerFunc` is a public type in the `interp` package. The underlying `execHandler` field is currently unexported — there is no exported `RunnerOption` to inject a custom `ExecHandlerFunc` from outside the package.
+
+The type is defined as stable public API for packages that extend or embed the `interp` package. When a future `RunnerOption` for custom exec handlers is exported, the `ExecHandlerFunc` and `HandlerContext` signatures documented here will remain the contract.
+
+## Example: an ExecHandlerFunc that allows /bin/grep
+
+The following shows how to write an `ExecHandlerFunc` that permits only `/bin/grep` and blocks everything else. This handler signature matches the `ExecHandlerFunc` type exactly:
+
+```go
+import (
+    "context"
+    "errors"
+    "fmt"
+    "os/exec"
+
+    "github.com/DataDog/rshell/interp"
+)
+
+// grepOnlyHandler is an ExecHandlerFunc that allows only "grep" to run.
+func grepOnlyHandler(ctx context.Context, args []string) error {
+    hc := interp.HandlerCtx(ctx)
+
+    if args[0] != "grep" {
+        fmt.Fprintf(hc.Stderr, "%s: command not allowed\n", args[0])
+        return interp.ExitStatus(127)
+    }
+
+    cmd := exec.CommandContext(ctx, "/bin/grep", args[1:]...)
+    cmd.Stdin = hc.Stdin
+    cmd.Stdout = hc.Stdout
+    cmd.Stderr = hc.Stderr
+    cmd.Dir = hc.Dir
+
+    if err := cmd.Run(); err != nil {
+        var exitErr *exec.ExitError
+        if errors.As(err, &exitErr) {
+            return interp.ExitStatus(exitErr.ExitCode())
+        }
+        return err
+    }
+    return nil
+}
+```
+
+This handler:
+1. Retrieves `HandlerContext` from `ctx` to access the current stdio and working directory.
+2. Rejects any command that is not `grep` with exit code 127.
+3. Runs `/bin/grep` with the script's stdin, stdout, stderr, and current directory.
+4. Maps `exec.ExitError` back to an `interp.ExitStatus` so the interpreter records the correct exit code.
+
+## Security considerations
+
+<Warning>
+  An `ExecHandler` runs with the full privileges of the host process. It receives the raw `args` slice as expanded by the shell — including values that came from the script, environment variables, or agent-generated input. The handler is responsible for all safety checks: argument validation, path restrictions, and preventing command injection.
+
+  rshell's built-in restrictions (`AllowedCommands`, `AllowedPaths`) do not apply inside the handler itself. If you use `exec.Command` or similar, you must independently enforce which binaries are allowed and which paths they may access.
+</Warning>
+
+Practical guidelines:
+
+- **Validate `args[0]`** against an explicit allowlist of binary paths or names before executing.
+- **Never pass `args` directly to a shell** (e.g. `exec.Command("sh", "-c", strings.Join(args, " "))`). This re-introduces a shell injection vector.
+- **Use absolute paths** for the binary being executed to avoid PATH manipulation.
+- **Respect `AllowedPaths`** by ensuring the binary and any files it accesses are within permitted directories, if applicable.
+- **Propagate exit codes** using `interp.ExitStatus` so the interpreter records the correct status.
+
+## IFS and argument splitting
+
+Before `ExecHandlerFunc` is called, the shell expands and splits the command's word list using `IFS`. A script can set `IFS` to a non-whitespace value (e.g. `IFS=/`) to manipulate how unquoted variable expansions are split before being passed as `args`. The handler receives the final expanded `args` slice and must not trust it blindly.
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Runner options" icon="sliders" href="/configuration/runner-options">
+    All RunnerOption functions for configuring the interpreter.
+  </Card>
+  <Card title="Allowed commands" icon="shield-check" href="/security/allowed-commands">
+    How the command allowlist works and how it interacts with the exec handler.
+  </Card>
+</CardGroup>

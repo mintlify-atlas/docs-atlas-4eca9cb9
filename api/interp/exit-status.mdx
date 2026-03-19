@@ -1,0 +1,76 @@
+---
+title: "ExitStatus"
+description: "The ExitStatus type returned by Runner.Run on non-zero exit"
+---
+
+```go
+type ExitStatus uint8
+
+func (s ExitStatus) Error() string
+```
+
+`ExitStatus` is an `error` value returned by [`Runner.Run`](/api/interp/runner) when the script exits with a non-zero status code. It implements the `error` interface; `Error()` returns `"exit status N"` where `N` is the numeric code.
+
+## Checking exit status
+
+Use `errors.As` to distinguish an `ExitStatus` from a fatal interpreter error:
+
+```go
+import (
+    "errors"
+    "fmt"
+
+    "github.com/DataDog/rshell/interp"
+)
+
+err := r.Run(ctx, file)
+if err != nil {
+    var status interp.ExitStatus
+    if errors.As(err, &status) {
+        fmt.Printf("exited with code %d\n", int(status))
+    } else {
+        // Fatal interpreter error — not a script exit code.
+        fmt.Printf("fatal error: %v\n", err)
+    }
+}
+```
+
+## Exit code meanings
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — `Run` returns `nil`, not `ExitStatus(0)` |
+| `1` | Builtin or command error |
+| `2` | Blocked shell feature or AST validation failure |
+| `127` | Command not found or not allowed |
+| `124` | Timeout — context deadline exceeded (when `MaxExecutionTime` is set) |
+
+<Note>
+  Exit code `0` is never returned as an `ExitStatus` error. A `nil` return from `Run` indicates success.
+</Note>
+
+## Distinguishing ExitStatus from fatal errors
+
+`Runner.Run` can return two categories of errors:
+
+**`ExitStatus`** — the script ran to completion but exited with a non-zero code. The interpreter is in a valid state and can be reused (with or without `Reset`).
+
+**Fatal errors** — the interpreter encountered an unrecoverable condition (for example, a handler returned an unexpected Go error). These are plain `error` values that do not satisfy `errors.As(err, &interp.ExitStatus{})`. After a fatal error, the Runner should be discarded.
+
+```go
+err := r.Run(ctx, file)
+switch {
+case err == nil:
+    // success
+case errors.As(err, new(interp.ExitStatus)):
+    // script exited non-zero; runner is still valid
+default:
+    // fatal: discard the runner
+    r.Close()
+}
+```
+
+## See also
+
+- [`Runner.Run`](/api/interp/runner) — where `ExitStatus` is returned
+- [`MaxExecutionTime`](/api/interp/runner-options#maxexecutiontime) — timeout that produces context deadline errors

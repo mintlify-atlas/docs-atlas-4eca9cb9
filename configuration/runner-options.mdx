@@ -1,0 +1,326 @@
+---
+title: "Runner options"
+description: "All RunnerOption functions available for configuring the rshell interpreter."
+---
+
+rshell uses the functional options pattern: you pass zero or more `RunnerOption` values to `interp.New()`, which applies them in order and returns a configured `*Runner`. If any option returns an error, `New` returns that error immediately and the runner is not created.
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.Env("HOME=/tmp", "PATH=/usr/bin:/bin"),
+    interp.AllowedCommands([]string{"rshell:echo", "rshell:grep"}),
+    interp.AllowedPaths([]string{"/data/logs"}),
+    interp.MaxExecutionTime(10*time.Second),
+)
+if err != nil {
+    return err
+}
+defer runner.Close()
+```
+
+`RunnerOption` is defined as:
+
+```go
+type RunnerOption func(*Runner) error
+```
+
+---
+
+## StdIO
+
+```go
+func StdIO(in io.Reader, out, err io.Writer) RunnerOption
+```
+
+Sets standard input, standard output, and standard error for the interpreter.
+
+- If `out` or `err` are `nil`, they default to `io.Discard`.
+- If `in` is `nil`, stdin is unavailable to the script.
+
+<ParamField path="in" type="io.Reader">
+  The reader used as standard input. May be `nil` to disable stdin.
+</ParamField>
+
+<ParamField path="out" type="io.Writer">
+  The writer used as standard output. `nil` discards all output.
+</ParamField>
+
+<ParamField path="err" type="io.Writer">
+  The writer used as standard error. `nil` discards all output.
+</ParamField>
+
+**Non-`*os.File` stdin.** If `in` is not an `*os.File`, rshell creates an `os.Pipe` and launches a goroutine to copy data into it. This is required because only `*os.File` values can be shared with subprocesses. The goroutine may consume the entire reader before the script reads from stdin.
+
+**Cancellable stdin reads.** When providing an `*os.File` as stdin, using `os.Pipe` gives the best chance of supporting cancellable reads via `os.File.SetReadDeadline`. This allows cancelling the runner's context to unblock a stalled stdin read.
+
+```go
+pr, pw, err := os.Pipe()
+if err != nil {
+    return err
+}
+runner, err := interp.New(
+    interp.StdIO(pr, os.Stdout, os.Stderr),
+)
+```
+
+---
+
+## Env
+
+```go
+func Env(pairs ...string) RunnerOption
+```
+
+Sets the initial environment for the interpreter. Each pair must be in `"KEY=value"` format.
+
+**Default: empty environment.** If `Env` is not provided, the interpreter starts with no environment variables — host environment variables are never inherited.
+
+<ParamField path="pairs" type="...string">
+  Environment variable definitions in `KEY=value` format.
+</ParamField>
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.Env(
+        "HOME=/tmp",
+        "PATH=/usr/bin:/bin",
+        "LANG=en_US.UTF-8",
+    ),
+)
+```
+
+<Tip>
+  Never pass `os.Environ()` to `Env`. Doing so would propagate all host environment variables — including secrets, API keys, and tokens — into the sandboxed interpreter. Pass only the specific variables the script needs.
+</Tip>
+
+---
+
+## AllowedCommands
+
+```go
+func AllowedCommands(names []string) RunnerOption
+```
+
+Restricts command execution to the named commands. All names must use the `rshell:` namespace prefix (e.g. `"rshell:echo"`, `"rshell:grep"`).
+
+**Default: no commands allowed.** If neither `AllowedCommands` nor `AllowAllCommands` is set, every command returns exit code 127 with the message `<cmd>: command not allowed`.
+
+<ParamField path="names" type="[]string">
+  Namespaced command names. Each entry must match `"rshell:<command>"` exactly.
+</ParamField>
+
+The prefix is stripped internally. At execution time, the bare command name from the script (e.g. `echo`) is matched against the stored allowlist.
+
+**Error cases.** `AllowedCommands` validates all entries at construction time. `interp.New` returns an error immediately if any entry is malformed:
+
+| Input | Error |
+|---|---|
+| `""` | `AllowedCommands: empty command name` |
+| `"cat"` | `AllowedCommands: "cat" missing namespace prefix (expected "rshell:<command>")` |
+| `"other:cat"` | `AllowedCommands: "other:cat" has unknown namespace "other" (only "rshell" is supported)` |
+| `"rshell:"` | `AllowedCommands: "rshell:" has empty command name` |
+| `"rshell:bin:cat"` | `AllowedCommands: "rshell:bin:cat" contains multiple colons; expected format "rshell:<command>"` |
+
+Path-containing names after prefix stripping (e.g. `rshell:/bin/bash`) will not match bare command names in scripts. The bare name `bash` and the path `/bin/bash` are treated as distinct entries.
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{
+        "rshell:echo",
+        "rshell:cat",
+        "rshell:grep",
+        "rshell:wc",
+    }),
+)
+```
+
+See [Allowed commands](/security/allowed-commands) for a deeper explanation of the namespace prefix and its security rationale.
+
+---
+
+## AllowAllCommands
+
+```go
+func AllowAllCommands() RunnerOption
+```
+
+Bypasses the `AllowedCommands` check and permits any command — builtin or external.
+
+<Warning>
+  `AllowAllCommands()` is for testing convenience only. It completely disables the command allowlist. Never use it in production code that runs agent-generated or user-influenced scripts.
+</Warning>
+
+```go
+// For tests only.
+runner, _ := interp.New(
+    interp.AllowAllCommands(),
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+)
+```
+
+When `AllowAllCommands` is active, any command name passes the allowlist check — including external commands. Note that external commands still require a custom `ExecHandler` to actually run; see [Exec handler](/configuration/exec-handler).
+
+---
+
+## AllowedPaths
+
+```go
+func AllowedPaths(paths []string) RunnerOption
+```
+
+Restricts all file operations performed by the interpreter to the specified directories. Paths must be absolute directories that already exist.
+
+**Default: all file access blocked.** If `AllowedPaths` is not set (or is given an empty slice), all file opens, reads, and glob expansions are denied.
+
+<ParamField path="paths" type="[]string">
+  Absolute paths to directories the shell is allowed to access. Each path must exist at construction time.
+</ParamField>
+
+rshell uses `os.Root` (Go 1.24+) to open a directory handle per allowed path at construction time. All subsequent file operations are resolved relative to these handles using `openat`-family syscalls. This makes symlink traversal, `..` sequences, and TOCTOU races impossible at the kernel level.
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{"rshell:cat", "rshell:grep"}),
+    interp.AllowedPaths([]string{"/data/logs", "/var/reports"}),
+)
+```
+
+<Note>
+  Always call `runner.Close()` when done. `Close` releases the `os.Root` file descriptors opened by `AllowedPaths`. The recommended pattern is `defer runner.Close()` immediately after `interp.New`.
+</Note>
+
+See [Filesystem sandboxing](/security/allowed-paths) for a full explanation of the sandbox and its enforcement guarantees.
+
+---
+
+## MaxExecutionTime
+
+```go
+func MaxExecutionTime(d time.Duration) RunnerOption
+```
+
+Bounds the total execution time of each `Runner.Run` call.
+
+- **Zero**: no timeout is applied (default).
+- **Positive**: `Run` derives a child context with this deadline before executing any nodes.
+- **Negative**: `interp.New` returns an error: `MaxExecutionTime: duration must be >= 0`.
+
+<ParamField path="d" type="time.Duration">
+  Maximum duration for a single `Run` call. Zero disables the limit. Negative values are rejected.
+</ParamField>
+
+The timeout is applied **per `Run` call**, not when the runner is created. Reusing a runner across multiple calls gives each call a fresh deadline.
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.MaxExecutionTime(5*time.Second),
+)
+```
+
+See [Execution timeout](/configuration/timeout) for the full interaction between `MaxExecutionTime` and `context.Context`.
+
+---
+
+## ProcPath
+
+```go
+func ProcPath(path string) RunnerOption
+```
+
+Overrides the path to the proc filesystem used by the `ps` builtin. This option has no effect on non-Linux platforms.
+
+**Default: `/proc`.** When not set, `ps` reads from the standard Linux proc filesystem.
+
+<ParamField path="path" type="string">
+  Absolute path to a proc filesystem directory. Empty string restores the default `/proc`.
+</ParamField>
+
+This option is intended for testing and container environments where `/proc` is not available or points to a different PID namespace.
+
+<Note>
+  Bare `ps` (session mode) uses the host process's PID to walk the `PPID` chain. If `path` points to a proc filesystem from a different PID namespace, the host PID will likely not be found there and session output will be empty. `ps -e` and `ps -p` work correctly against any proc tree.
+</Note>
+
+```go
+// Use a mock proc tree in tests.
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.ProcPath("/tmp/testproc"),
+)
+```
+
+---
+
+## Complete example
+
+The following configures a runner with all commonly used options:
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+    "time"
+
+    "github.com/DataDog/rshell/interp"
+    "mvdan.cc/sh/v3/syntax"
+    "strings"
+)
+
+func main() {
+    runner, err := interp.New(
+        interp.StdIO(nil, os.Stdout, os.Stderr),
+        interp.Env("HOME=/tmp", "PATH=/usr/bin:/bin"),
+        interp.AllowedCommands([]string{
+            "rshell:echo",
+            "rshell:cat",
+            "rshell:grep",
+            "rshell:wc",
+        }),
+        interp.AllowedPaths([]string{"/data/logs"}),
+        interp.MaxExecutionTime(10*time.Second),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer runner.Close()
+
+    prog, _ := syntax.NewParser().Parse(strings.NewReader(`
+        grep -r "ERROR" /data/logs | wc -l
+    `), "")
+
+    if err := runner.Run(context.Background(), prog); err != nil {
+        panic(err)
+    }
+}
+```
+
+## Runner lifecycle
+
+Two methods on `*Runner` are relevant after construction:
+
+- **`runner.Reset()`** — restores the runner to its initial state (variables, working directory, shell options) so it can be reused for a new, independent script run without carrying over any state from the previous run. You do not need to call `Reset` between incremental runs where accumulated state is intentional.
+- **`runner.Close()`** — releases `os.Root` file descriptors opened by `AllowedPaths`. Always defer this after `New`.
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Exec handler" icon="terminal" href="/configuration/exec-handler">
+    Configure a custom handler for external command execution.
+  </Card>
+  <Card title="Execution timeout" icon="clock" href="/configuration/timeout">
+    How `MaxExecutionTime` and context deadlines interact.
+  </Card>
+  <Card title="Allowed commands" icon="shield-check" href="/security/allowed-commands">
+    Security rationale behind the `rshell:` namespace prefix.
+  </Card>
+  <Card title="Filesystem sandboxing" icon="folder-lock" href="/security/allowed-paths">
+    How `os.Root` enforces directory boundaries.
+  </Card>
+</CardGroup>

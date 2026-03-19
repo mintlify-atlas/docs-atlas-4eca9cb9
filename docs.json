@@ -1,122 +1,105 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "rshell",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#94cb04",
+    "light": "#545454",
+    "dark": "#94cb04"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
+  "logo": {
+    "light": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
+    "dark": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/DataDog/rshell"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/DataDog/rshell"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Security Model",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "security/overview",
+              "security/allowed-commands",
+              "security/allowed-paths",
+              "security/environment"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Shell Features",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "features/builtins",
+              "features/variables",
+              "features/control-flow",
+              "features/pipes-redirections",
+              "features/quoting-expansion"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Configuration",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "configuration/runner-options",
+              "configuration/exec-handler",
+              "configuration/timeout"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "CLI Reference",
+            "pages": ["cli/usage"]
+          },
+          {
+            "group": "Development",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "development/contributing",
+              "development/testing",
+              "development/publishing"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "interp package",
             "pages": [
-              "api-reference/introduction"
+              "api/interp/new",
+              "api/interp/runner",
+              "api/interp/runner-options",
+              "api/interp/exit-status"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "allowedpaths package",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/allowedpaths/sandbox"
+            ]
+          },
+          {
+            "group": "builtins package",
+            "pages": [
+              "api/builtins/command",
+              "api/builtins/call-context"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

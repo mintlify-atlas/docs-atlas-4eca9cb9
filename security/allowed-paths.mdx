@@ -1,0 +1,155 @@
+---
+title: "Filesystem sandboxing"
+description: "How AllowedPaths uses Go's os.Root API to confine all file operations to permitted directories at the kernel level."
+---
+
+By default, rshell blocks all file and directory access. Attempting to read a file, stat a path, or expand a glob returns a permission error. `AllowedPaths` opts in to filesystem access for specific directories.
+
+## How it works
+
+`AllowedPaths` accepts a list of absolute directory paths and opens an `os.Root` handle for each one at construction time:
+
+```go
+interp.AllowedPaths([]string{"/data/logs", "/tmp/agent-workspace"})
+```
+
+From that point on, every file operation the shell performs — open, stat, lstat, readdir, and glob expansion — goes through one of those `os.Root` handles. The handle is a file descriptor pinned to the directory. Subsequent opens are performed as `openat` syscalls relative to that fd.
+
+## Security guarantees
+
+Using `os.Root` provides three specific guarantees that path-string validation cannot:
+
+**Symlink traversal immunity.** A path like `/data/logs/../../etc/passwd` resolves to `/etc/passwd` in string space, but `openat` does not follow symlinks out of the pinned directory. The kernel rejects the traversal.
+
+**TOCTOU (time-of-check-time-of-use) race elimination.** With classic path checks, an attacker can replace a path component between the check and the open. `openat` against a pinned fd is a single atomic kernel operation — there is no window.
+
+**`..` escape blocking.** The `os.Root` implementation in Go 1.24+ explicitly rejects any path component that would escape the root, including `..` sequences in any position.
+
+<Note>
+  The `os.Root` API requires Go 1.24 or later. rshell requires Go 1.24+.
+</Note>
+
+## Signature
+
+```go
+func AllowedPaths(paths []string) RunnerOption
+```
+
+Paths must be:
+- Absolute (must start with `/` on Unix, or a drive letter on Windows)
+- Directories that exist at the time `interp.New` is called
+- Readable by the process
+
+If any path is not an existing directory, `interp.New` returns an error and no runner is created.
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.AllowedCommands([]string{"rshell:cat", "rshell:grep"}),
+    interp.AllowedPaths([]string{"/data/reports"}),
+)
+if err != nil {
+    // err describes which path was invalid
+    return err
+}
+defer runner.Close()
+```
+
+## Handles are pinned at construction time
+
+The `Sandbox` struct stores the `os.Root` handles opened during `New`. These handles are not re-opened on each run — they are pinned at construction time and shared across all `runner.Run` calls.
+
+This matters because it eliminates any filesystem race between when you configure the runner and when a script runs. If the directory is renamed or deleted after `interp.New` returns, the handle still refers to the original directory inode. The sandbox cannot be subverted by racing the filesystem after construction.
+
+```go
+// os.Root handles are opened here, once:
+runner, _ := interp.New(
+    interp.AllowedPaths([]string{"/data"}),
+)
+
+// Handles remain valid across multiple Run calls:
+runner.Run(ctx, prog1)
+runner.Run(ctx, prog2)
+
+// Release the os.Root file descriptors when done:
+defer runner.Close()
+```
+
+<Warning>
+  Always call `runner.Close()` when you are done with a runner. Each `AllowedPaths` entry holds an open file descriptor. Failing to close the runner leaks those descriptors.
+</Warning>
+
+## Restricted operations
+
+The following file operations are routed through the sandbox and will fail for paths outside `AllowedPaths`:
+
+| Operation | Shell usage |
+|---|---|
+| `open` (read-only) | `cat file`, command substitution, input redirects (`< file`) |
+| `stat` | `test -f file`, `[ -e file ]` |
+| `lstat` | `test -L file`, `[ -L file ]` |
+| `readdir` | `ls dir/`, directory iteration in `find` |
+| `glob expansion` | `*.log`, `data/**/*.json` |
+| `access` | permission checks (`test -r file`, `test -x file`) |
+
+## Write access is always blocked
+
+Even within `AllowedPaths`, write access to files is always blocked. The `Open` method in the sandbox rejects any open flag other than `O_RDONLY`:
+
+```go
+// From allowedpaths/sandbox.go:
+func (s *Sandbox) Open(path string, cwd string, flag int, perm os.FileMode) (io.ReadWriteCloser, error) {
+    if flag != os.O_RDONLY {
+        return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
+    }
+    // ...
+}
+```
+
+This is a defense-in-depth measure. The AST validator blocks write redirections to non-`/dev/null` paths before execution. The sandbox's own write rejection is a second, independent layer that would catch any write attempt even if the validator were bypassed.
+
+The only writable target available to shell scripts is `/dev/null`, which is handled specially — it is mapped to `io.Discard` at the runner level and never reaches the sandbox at all.
+
+## Multiple paths
+
+You can specify multiple allowed directories. A file operation succeeds if the target path falls under any one of the specified roots:
+
+```go
+interp.AllowedPaths([]string{
+    "/data/logs",
+    "/data/reports",
+    "/tmp/agent-workspace",
+})
+```
+
+The sandbox resolves a requested path against each root in order and uses the first match. Paths that do not fall under any root are rejected.
+
+## ProcPath option
+
+On Linux, the `ps` and `ss` builtins read the proc filesystem (`/proc`). The `ProcPath` option overrides the default `/proc` path for container environments where the proc root may be mounted at a different location:
+
+```go
+interp.ProcPath("/host/proc")
+```
+
+`ProcPath` is intentionally exempt from `AllowedPaths` restrictions. The proc filesystem is a read-only virtual filesystem managed by the kernel — it does not expose host data under the normal file hierarchy. Exempting it avoids requiring callers to add `/proc` to their path allowlist just to make `ps` work.
+
+<Note>
+  `ProcPath` is a privileged option set by trusted caller code at construction time. Shell scripts cannot influence it.
+</Note>
+
+## When AllowedPaths is not set
+
+If you do not call `AllowedPaths`, the sandbox is `nil` and all file access is blocked:
+
+```go
+// No AllowedPaths — all file access blocked
+runner, _ := interp.New(
+    interp.AllowedCommands([]string{"rshell:echo"}),
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+)
+// cat /etc/passwd → permission denied
+// *.log glob → returns empty (no entries)
+```
+
+An empty slice (`AllowedPaths([]string{})`) also blocks all file access — it creates a sandbox with no roots.

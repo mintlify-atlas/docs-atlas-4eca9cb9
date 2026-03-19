@@ -1,0 +1,218 @@
+---
+title: "Execution timeout"
+description: "Control how long a shell script is allowed to run using MaxExecutionTime or a context deadline."
+---
+
+rshell supports two independent mechanisms for bounding script execution time. You can use either one, or combine them — the tightest deadline wins.
+
+## Option 1: MaxExecutionTime
+
+```go
+func MaxExecutionTime(d time.Duration) RunnerOption
+```
+
+Set a timeout on the runner itself:
+
+```go
+runner, err := interp.New(
+    interp.StdIO(nil, os.Stdout, os.Stderr),
+    interp.MaxExecutionTime(5*time.Second),
+)
+```
+
+When `MaxExecutionTime` is set to a non-zero duration, `Runner.Run` derives a child context with that timeout before executing any nodes:
+
+```go
+if r.maxExecutionTime > 0 {
+    var cancel context.CancelFunc
+    ctx, cancel = context.WithTimeout(ctx, r.maxExecutionTime)
+    defer cancel()
+}
+```
+
+**Behavior by value:**
+
+| Value | Behavior |
+|---|---|
+| Zero (`0`) | No timeout applied (default) |
+| Positive | Child context with that deadline created on each `Run` call |
+| Negative | `interp.New` returns an error: `MaxExecutionTime: duration must be >= 0` |
+
+## Option 2: context.Context deadline
+
+Pass a context with a deadline or timeout directly to `Runner.Run`:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+err := runner.Run(ctx, prog)
+```
+
+This is the standard Go pattern for timeout propagation and works well when the timeout is owned by the caller (e.g. an HTTP request handler, an agent framework, or an orchestration layer).
+
+## How they interact
+
+When both are set, `MaxExecutionTime` derives a child context from the one passed to `Run`. The effective deadline is whichever expires first:
+
+```go
+// Runner configured with a 10s max.
+runner, _ := interp.New(
+    interp.MaxExecutionTime(10*time.Second),
+    ...
+)
+
+// Caller passes a context that expires in 3s.
+ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+defer cancel()
+
+// Effective deadline is 3s (the tighter of the two).
+err := runner.Run(ctx, prog)
+```
+
+<Tip>
+  Use `MaxExecutionTime` to enforce a hard per-script upper bound at the runner level. Use a context deadline for dynamic timeouts that vary per call — for example, when remaining time from a parent request must be respected.
+</Tip>
+
+## Per-Run behavior
+
+The timeout set by `MaxExecutionTime` is applied **per `Run` call**, not at runner construction time. Each call to `Run` gets a fresh deadline. This means reusing a runner across multiple sequential script runs does not carry over elapsed time from previous runs.
+
+```go
+// Each call gets its own fresh 5s deadline.
+for _, script := range scripts {
+    prog, _ := syntax.NewParser().Parse(strings.NewReader(script), "")
+    err := runner.Run(ctx, prog)
+    // ...
+}
+```
+
+## What happens when the timeout fires
+
+When the deadline is exceeded, the context is cancelled with `context.DeadlineExceeded`. The runner checks `ctx.Err()` at each statement boundary and halts execution:
+
+```go
+func (r *Runner) stop(ctx context.Context) bool {
+    if r.exit.exiting {
+        return true
+    }
+    if err := ctx.Err(); err != nil {
+        r.exit.fatal(err)
+        return true
+    }
+    return false
+}
+```
+
+`Runner.Run` returns the `context.DeadlineExceeded` error to the caller. Use `errors.Is` to detect it:
+
+```go
+err := runner.Run(ctx, prog)
+if errors.Is(err, context.DeadlineExceeded) {
+    fmt.Println("script timed out")
+}
+```
+
+## Exit code 124 (CLI)
+
+The `rshell` CLI maps timeout errors to exit code **124**:
+
+```go
+const exitCodeTimeout = 124
+```
+
+Both `context.DeadlineExceeded` and `context.Canceled` are mapped to 124. When the `--timeout` flag is set, the CLI also prints a message to stderr:
+
+```
+error: execution timed out after 5s
+```
+
+This exit code matches the convention used by the `timeout(1)` command on Linux.
+
+The Go API does not use exit code 124. It returns `context.DeadlineExceeded` directly from `Run`. Exit code 124 is a CLI-layer concern only.
+
+## CLI usage
+
+The `--timeout` flag accepts any duration string accepted by Go's `time.ParseDuration`:
+
+```bash
+# Time out after 5 seconds.
+rshell --allow-all-commands --timeout 5s -c 'echo hello'
+
+# Time out after 100 milliseconds.
+rshell --allowed-commands rshell:grep --allowed-paths /var/log --timeout 100ms script.sh
+
+# Time out after 1 minute.
+rshell --allowed-commands rshell:find --allowed-paths /data --timeout 1m -c 'find /data -name "*.log"'
+```
+
+Valid duration formats: `100ms`, `1.5s`, `2m`, `1h30m`.
+
+Negative values are rejected: `--timeout -1s` returns an error before any execution.
+
+## Complete example
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "os"
+    "strings"
+    "time"
+
+    "github.com/DataDog/rshell/interp"
+    "mvdan.cc/sh/v3/syntax"
+)
+
+func main() {
+    // Runner with a 10s hard cap per Run call.
+    runner, err := interp.New(
+        interp.StdIO(nil, os.Stdout, os.Stderr),
+        interp.AllowedCommands([]string{"rshell:echo"}),
+        interp.MaxExecutionTime(10*time.Second),
+    )
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+    defer runner.Close()
+
+    // Caller also enforces its own 3s deadline — the tighter one wins.
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+    defer cancel()
+
+    prog, _ := syntax.NewParser().Parse(strings.NewReader(`echo hello`), "")
+
+    err = runner.Run(ctx, prog)
+    if err != nil {
+        if errors.Is(err, context.DeadlineExceeded) {
+            fmt.Fprintln(os.Stderr, "script timed out")
+            os.Exit(1)
+        }
+        var status interp.ExitStatus
+        if errors.As(err, &status) {
+            os.Exit(int(status))
+        }
+        fmt.Fprintln(os.Stderr, "error:", err)
+        os.Exit(1)
+    }
+}
+```
+
+<Note>
+  Context cancellation also works for early termination outside of timeout scenarios. If you cancel the context passed to `Run` for any reason (e.g. the parent request was cancelled, or the user pressed Ctrl+C), the runner stops at the next statement boundary and `Run` returns `context.Canceled`. The CLI maps this to exit code 124 as well.
+</Note>
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Runner options" icon="sliders" href="/configuration/runner-options">
+    Full reference for all `interp.New()` options including `MaxExecutionTime`.
+  </Card>
+  <Card title="Exec handler" icon="terminal" href="/configuration/exec-handler">
+    Configure a custom handler for external command execution.
+  </Card>
+</CardGroup>
