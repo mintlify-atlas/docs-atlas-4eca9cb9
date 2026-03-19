@@ -1,0 +1,120 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "rshell",
+  "projectDescription": "A restricted, sandboxed shell interpreter for Go, designed for safe execution of shell commands by AI agents with default-deny security policies.",
+  "theme": "aspen",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Security Model",
+            "pages": [
+              "security/overview",
+              "security/allowed-commands",
+              "security/allowed-paths",
+              "security/environment"
+            ]
+          },
+          {
+            "group": "Shell Features",
+            "pages": [
+              "features/builtins",
+              "features/variables",
+              "features/control-flow",
+              "features/pipes-redirections",
+              "features/quoting-expansion"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/runner-options",
+              "configuration/exec-handler",
+              "configuration/timeout"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": ["cli/usage"]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/contributing",
+              "development/testing",
+              "development/publishing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "interp package",
+            "pages": [
+              "api/interp/new",
+              "api/interp/runner",
+              "api/interp/runner-options",
+              "api/interp/exit-status"
+            ]
+          },
+          {
+            "group": "allowedpaths package",
+            "pages": [
+              "api/allowedpaths/sandbox"
+            ]
+          },
+          {
+            "group": "builtins package",
+            "pages": [
+              "api/builtins/command",
+              "api/builtins/call-context"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Default-deny security model — commands, filesystem, environment, and redirections all blocked by default",
+    "AllowedCommands with namespaced rshell: prefix prevents command injection",
+    "AllowedPaths filesystem sandboxing using Go os.Root (openat syscalls), immune to symlink traversal and TOCTOU attacks",
+    "20+ built-in POSIX commands (cat, grep, find, sed, ls, ps, ss, ping, etc.) with security restrictions applied",
+    "Whole-run execution timeout via context or MaxExecutionTime option",
+    "Cross-platform: Linux, macOS, and Windows",
+    "900+ YAML-driven test scenarios validated against real bash for POSIX parity",
+    "Embeddable as a Go library or usable as a standalone CLI binary"
+  ],
+  "publicApiSurface": [
+    "interp.New(opts ...RunnerOption) (*Runner, error)",
+    "interp.Runner.Run(ctx context.Context, node syntax.Node) error",
+    "interp.Runner.Reset()",
+    "interp.Runner.Close() error",
+    "interp.StdIO(in io.Reader, out, err io.Writer) RunnerOption",
+    "interp.Env(pairs ...string) RunnerOption",
+    "interp.AllowedCommands(names []string) RunnerOption",
+    "interp.AllowAllCommands() RunnerOption",
+    "interp.AllowedPaths(paths []string) RunnerOption",
+    "interp.MaxExecutionTime(d time.Duration) RunnerOption",
+    "interp.ProcPath(path string) RunnerOption",
+    "interp.ExitStatus",
+    "allowedpaths.Sandbox",
+    "allowedpaths.New(paths []string) (*Sandbox, error)",
+    "builtins.Command",
+    "builtins.CallContext",
+    "builtins.Result",
+    "builtins.Lookup(name string) (HandlerFunc, bool)",
+    "builtins.Names() []string",
+    "rshell CLI: --allowed-commands, --allowed-paths, --allow-all-commands, --timeout, --proc-path, -c"
+  ]
+}
